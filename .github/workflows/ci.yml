@@ -1,0 +1,112 @@
+name: ci
+
+# The full release pipeline — the complete cross-compile matrix, signed
+# artifacts, the coordinator container image — belongs to its own work item:
+#
+#   eka get walkie/ts:build-release-matrix
+#
+# This workflow is the floor: it enforces the invariants that are cheap to check
+# and expensive to discover late. The cross-compile smoke job in particular
+# exists because the fleet includes ARM devices, and the failure mode it catches
+# — a dependency that quietly needs CGO — would otherwise surface only at
+# release time.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # adr:002-runtime-stack: the default build is pure Go and fully static.
+      # This is the guard that makes that real rather than aspirational.
+      - name: Default build must not require CGO
+        run: make check-cgo
+
+      - name: Test (default variant)
+        run: make test
+
+      - name: Test (voice variant)
+        run: make test-voice
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Module is tidy
+        run: make tidy
+
+  cross:
+    name: cross-compile smoke
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: arm
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # No C toolchain is installed in this job on purpose. If this step needs
+      # one, a dependency has broken the pure-Go property and that is an
+      # architectural problem, not a CI problem.
+      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build ./...
+
+  proto:
+    name: proto
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # buf breaking compares against another ref, so it needs history.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: bufbuild/buf-setup-action@v1
+
+      - name: Lint schema
+        run: buf lint
+
+      # Committed generated code must match proto/. This is what lets the repo
+      # be built with no codegen toolchain while staying trustworthy.
+      - name: Generated code is in sync
+        run: make proto-check
+
+      # adr:003-wire-protocol: the fleet runs mixed client versions, so a
+      # renumbered or reused field number is a runtime break with no
+      # compile-time signal. Checked mechanically rather than by review.
+      - name: Schema stays backward compatible
+        run: buf breaking --against '.git#branch=main'

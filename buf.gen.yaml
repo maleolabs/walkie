@@ -1,0 +1,21 @@
+# Code generation for walkie's control-plane schema.
+#
+# Output lands in internal/genproto and is COMMITTED to the repository, so that
+# `go build` works with no codegen toolchain installed. That matters for the ARM
+# devices in the fleet and for anyone cloning the repo for the first time.
+# `make proto-check` regenerates and fails on any diff, which is what keeps the
+# committed output honest.
+#
+# TODO(ts:protocol-schema-v1): pin the plugin to an exact version.
+# An unpinned remote plugin resolves to whatever is current, so two people can
+# generate different bytes from the same .proto — which defeats the
+# reproducibility acceptance criterion on this work item and would show up as
+# spurious `make proto-check` failures. A version was deliberately not invented
+# here rather than guessed; pin it once you have run buf and seen what resolves.
+version: v2
+
+plugins:
+  - remote: buf.build/protocolbuffers/go
+    out: internal/genproto
+    opt:
+      - paths=source_relative

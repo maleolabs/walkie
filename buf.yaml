@@ -1,0 +1,23 @@
+# buf configuration for walkie's control-plane schema.
+#
+# Owning work item: eka get walkie/ts:protocol-schema-v1
+#
+# `breaking` is the part that earns its place here. adr:003-wire-protocol
+# requires the control-plane schema to stay compatible across a fleet that runs
+# mixed client versions and does not upgrade in lockstep. Reviewing that by eye
+# does not scale; `buf breaking` checks it mechanically. FILE is the right
+# granularity: it forbids renumbering or reusing a field number, which is the
+# specific mistake that breaks an older client at runtime with no compile-time
+# signal at all.
+version: v2
+
+modules:
+  - path: proto
+
+lint:
+  use:
+    - STANDARD
+
+breaking:
+  use:
+    - FILE
