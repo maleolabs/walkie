@@ -1,0 +1,120 @@
+EKA STANDARD
+Version 1.0
+
+The Engineering Knowledge Architecture (EKA) Standard. The normative source of
+truth is the specification/ directory (the versioned snapshot of the standard
+corpus). This file is a compact summary and index, not a definition: on any
+conflict, specification/ wins over this file, README.md, the changelog, and the
+contribution guide. "must" = binding requirement, "should" = recommendation,
+"may" = option.
+
+DESCRIPTION
+
+EKA is the canonical conceptual model for engineering knowledge: the definition
+of Artifact, Identity, State, knowledge taxonomies, the layer architecture, and
+exchange contracts between systems. It represents engineering knowledge as
+first-class entities (Artifacts) with a stable Identity, an explicit owned
+State Vector, structured Content, and Relationships expressed by Identity. It
+is a conceptual model, not a product or tool. Scope: concepts, invariants, and
+contracts — not serialization formats, storage layout, or enforcement
+mechanisms.
+
+PRINCIPLES
+
+P1  Separation of Concerns — knowledge and execution are separated into layers
+    with explicit contracts.
+P2  Explicit State — State is always explicit owned metadata, never implicit in
+    structure.
+P3  Stable Identity — Identity is immutable, independent of location, storage,
+    State, and classification.
+P4  Protocol vs Content Distinction — protocol belongs to the Operating Layer;
+    Content to the Knowledge Layer.
+P5  Layer Independence — each layer evolves without overhauling the others.
+P6  Single Writer — every State field has exactly one owner; other views are
+    projections.
+P7  Forward-Only Transitions — State Domains move forward; corrections use a new
+    instance + Relationship.
+P8  Approved-Content Immutability — approved Content is not silently mutated.
+P9  Structure as Projection of State — structure is derived from State, never a
+    second fact.
+P10 Two Change Channels — the Content (governance) and State (protocol)
+    channels are separate.
+P11 Determinism by Protocol — execution order is defined by protocol.
+P12 Preservation Over Deletion — history is knowledge; superseded/archived are
+    Records.
+P13 Lossless Exchange — exchange loses and duplicates nothing.
+P14 Minimum Canonical Core — the standard sets concepts and contracts;
+    implementations choose mechanisms.
+P15 Classification is Property, Not Identity — a classification change never
+    breaks references.
+P16 Enforcement Capability Varies, Invariants Don't — mechanisms differ; the
+    invariants are identical.
+
+RULES
+
+ 1. R0  Structural well-formedness — artifacts must be structurally parseable with valid identity fields. (See: specification/rules/rule-001.md)
+ 2. R1  Identity uniqueness — no duplicate (Namespace, Type, ID, InstanceVersion). (See: specification/rules/rule-002.md)
+ 3. R2  Identity canonical — Identity serialized losslessly/unambiguously/machine-parseably, never encoded in location or filename. (See: specification/rules/rule-003.md)
+ 4. R3  State value validity — every owned State Domain value is a member of its value set. (See: specification/rules/rule-004.md)
+ 5. R4  Owned-set compliance — present State fields equal exactly the type's owned State Domains. (See: specification/rules/rule-005.md)
+ 6. R5  Referential integrity — every Relationship reference resolves; draft tolerance for Draft. (See: specification/rules/rule-006.md)
+ 7. R6  Classification — primary Knowledge Dimension declared and valid; Domain derived from Type. (See: specification/rules/rule-007.md)
+ 8. R7  Change Log consistency — every transition has an entry; last entry equals current value. (See: specification/rules/rule-008.md)
+ 9. R8  Single-writer & projection non-writer — one writer per State field; projections never write. (See: specification/rules/rule-009.md)
+10. R9  Well-formedness — Content structure matches the type family; superseded ADR declares successor. (See: specification/rules/rule-010.md)
+11. R10 Stratification traceability — non-stratum-1 artifacts trace to a higher stratum (warning). (See: specification/rules/rule-011.md)
+12. R11 Domain coherence — declared Domain is canonical and equals the Type's home domain. (See: specification/rules/rule-012.md)
+13. R12 Cross-stratum supersession prohibition — supersedes/amends never target a higher stratum. (See: specification/rules/rule-013.md)
+14. R13 Graph pass / note resolution gates — work-item note-resolution gates at in-review/done. (See: specification/rules/rule-014.md)
+
+Verdicts: conformant | conformant with warnings | non-conformant. Validators are
+mechanical, deterministic, read-only, and derive verdicts only from this
+standard (P16).
+
+DOMAINS
+
+Discovery (stratum 1) — intent, requirements, research. Tokens: vis-, str-, req-, fnd-.
+Architecture (stratum 2) — decisions, specifications, standards, vocabulary. Tokens: arc-, adr-, dec-, spec-, std-, gls-.
+Planning (stratum 3) — commitment: scope, epics, plans, traceability. Tokens: scp-, epc-, plan-, trc-.
+Execution (stratum 4) — work items, containers, tickets, reviews, sessions, notes. Tokens: rvw-, ctr-, tkt-, sto-, ts-, bug-, td-, ch-, spk-, ses-, cmt-.
+Operations (stratum 5) — runbooks, release records. Tokens: run-, rel-.
+
+Stratum Authority Invariant: lower-stratum knowledge must not contradict
+higher-stratum knowledge in force; lower-stratum artifacts never supersede or
+amend higher-stratum artifacts.
+
+CANONICAL TOKENS (27)
+
+Discovery:      vis- (Vision/Manifesto), str- (Strategy), req- (Requirement/PRD), fnd- (Research Finding)
+Architecture:   arc- (Architecture Description), adr- (ADR), dec- (Decision Record), spec- (Specification), std- (Standard/Guideline), gls- (Glossary/Term)
+Planning:       scp- (Scope Definition), epc- (Epic), plan- (Plan), trc- (Traceability Artifact)
+Execution:      rvw- (Review), ctr- (Execution Container), tkt- (Ticket), sto- (Story), ts- (Task), bug- (Bug), td- (Technical Debt), ch- (Chore), spk- (Spike), ses- (Session), cmt- (Note)
+Operations:     run- (Runbook/Operational Guide), rel- (Release Record)
+
+The token is part of Identity (the Type qualifier), never
+methodology-dependent. Methodology terms (PRD, ADR, RFC, Epic, Sprint, Ticket,
+Release, Incident, Runbook, etc.) are Representation Aliases, never Artifact
+types. Operating tokens (ctr-, tkt-, sto-, ts-, bug-, td-, ch-, spk-, ses-,
+cmt-) share "operating token (informational dimension)" semantics.
+
+SPECIFICATION
+
+Rules:          specification/rules/        (rule-001.md .. rule-014.md = R0..R13)
+Domains:        specification/domains/      (overview.md + discovery, architecture, planning, execution, operations)
+Tokens:         specification/tokens/       (overview.md + 27 token files)
+Overview:       specification/overview.md   (identity, purpose, description, scope, reading convention)
+Principles:     specification/principles.md (P1..P16)
+Concepts:       specification/concepts.md   (core concepts, layer model KB/OS/EX, global invariants)
+Identity:       specification/identity.md   (composition, rules, serialization contract, version semantics)
+State:          specification/state.md      (owned State Domains, value sets, transitions, State Vector)
+Dimensions:     specification/dimensions.md (12 Knowledge Dimensions)
+Relationships:  specification/relationships.md (supersedes, amends, derives-from, depends-on, validates, discusses, repliesTo)
+Naming:         specification/naming.md     (camelCase convention)
+Exchange:       specification/exchange.md   (unit, round-trip, package, determinism, version axes)
+Versioning:     specification/versioning.md (semantic versioning + immutability)
+
+Version axes (must not be conflated): Standard corpus 1.0 | RSF
+serializationVersion "2" | representations eka/structured-json/1,
+eka/structured-text/1 | machine schema eka-cko-v2 (legacy eka-cko-v1).
+
+END OF EKA STANDARD 1.0 (SUMMARY)
