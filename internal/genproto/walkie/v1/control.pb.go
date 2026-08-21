@@ -22,6 +22,164 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// PresenceState is the coordinator's verdict on a device's liveness. It is
+// derived from observed heartbeats, never from anything a client asserts —
+// see Heartbeat for why client-announced liveness is forbidden outright.
+type PresenceState int32
+
+const (
+	PresenceState_PRESENCE_STATE_UNSPECIFIED PresenceState = 0
+	PresenceState_PRESENCE_STATE_ONLINE      PresenceState = 1
+	PresenceState_PRESENCE_STATE_OFFLINE     PresenceState = 2
+)
+
+// Enum value maps for PresenceState.
+var (
+	PresenceState_name = map[int32]string{
+		0: "PRESENCE_STATE_UNSPECIFIED",
+		1: "PRESENCE_STATE_ONLINE",
+		2: "PRESENCE_STATE_OFFLINE",
+	}
+	PresenceState_value = map[string]int32{
+		"PRESENCE_STATE_UNSPECIFIED": 0,
+		"PRESENCE_STATE_ONLINE":      1,
+		"PRESENCE_STATE_OFFLINE":     2,
+	}
+)
+
+func (x PresenceState) Enum() *PresenceState {
+	p := new(PresenceState)
+	*p = x
+	return p
+}
+
+func (x PresenceState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PresenceState) Descriptor() protoreflect.EnumDescriptor {
+	return file_walkie_v1_control_proto_enumTypes[0].Descriptor()
+}
+
+func (PresenceState) Type() protoreflect.EnumType {
+	return &file_walkie_v1_control_proto_enumTypes[0]
+}
+
+func (x PresenceState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PresenceState.Descriptor instead.
+func (PresenceState) EnumDescriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{0}
+}
+
+type QueueRefusalReason int32
+
+const (
+	QueueRefusalReason_QUEUE_REFUSAL_REASON_UNSPECIFIED QueueRefusalReason = 0
+	// The recipient's queue is at its configured size cap.
+	QueueRefusalReason_QUEUE_REFUSAL_REASON_SIZE_CAP QueueRefusalReason = 1
+)
+
+// Enum value maps for QueueRefusalReason.
+var (
+	QueueRefusalReason_name = map[int32]string{
+		0: "QUEUE_REFUSAL_REASON_UNSPECIFIED",
+		1: "QUEUE_REFUSAL_REASON_SIZE_CAP",
+	}
+	QueueRefusalReason_value = map[string]int32{
+		"QUEUE_REFUSAL_REASON_UNSPECIFIED": 0,
+		"QUEUE_REFUSAL_REASON_SIZE_CAP":    1,
+	}
+)
+
+func (x QueueRefusalReason) Enum() *QueueRefusalReason {
+	p := new(QueueRefusalReason)
+	*p = x
+	return p
+}
+
+func (x QueueRefusalReason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (QueueRefusalReason) Descriptor() protoreflect.EnumDescriptor {
+	return file_walkie_v1_control_proto_enumTypes[1].Descriptor()
+}
+
+func (QueueRefusalReason) Type() protoreflect.EnumType {
+	return &file_walkie_v1_control_proto_enumTypes[1]
+}
+
+func (x QueueRefusalReason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use QueueRefusalReason.Descriptor instead.
+func (QueueRefusalReason) EnumDescriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{1}
+}
+
+// ProtocolErrorCode discriminates why the coordinator refused something.
+type ProtocolErrorCode int32
+
+const (
+	ProtocolErrorCode_PROTOCOL_ERROR_CODE_UNSPECIFIED ProtocolErrorCode = 0
+	// The peer's protocol_version falls outside the range this side supports.
+	// See Hello.protocol_version for the full placement reasoning.
+	ProtocolErrorCode_PROTOCOL_ERROR_CODE_VERSION_UNSUPPORTED ProtocolErrorCode = 1
+	// The envelope violated the protocol in a way field-level compatibility
+	// cannot absorb (e.g. no payload set where one is required).
+	ProtocolErrorCode_PROTOCOL_ERROR_CODE_MALFORMED ProtocolErrorCode = 2
+	// The envelope names a device the coordinator has never resolved on this
+	// tailnet — usually a typo in a direct-message recipient.
+	ProtocolErrorCode_PROTOCOL_ERROR_CODE_DEVICE_UNKNOWN ProtocolErrorCode = 3
+)
+
+// Enum value maps for ProtocolErrorCode.
+var (
+	ProtocolErrorCode_name = map[int32]string{
+		0: "PROTOCOL_ERROR_CODE_UNSPECIFIED",
+		1: "PROTOCOL_ERROR_CODE_VERSION_UNSUPPORTED",
+		2: "PROTOCOL_ERROR_CODE_MALFORMED",
+		3: "PROTOCOL_ERROR_CODE_DEVICE_UNKNOWN",
+	}
+	ProtocolErrorCode_value = map[string]int32{
+		"PROTOCOL_ERROR_CODE_UNSPECIFIED":         0,
+		"PROTOCOL_ERROR_CODE_VERSION_UNSUPPORTED": 1,
+		"PROTOCOL_ERROR_CODE_MALFORMED":           2,
+		"PROTOCOL_ERROR_CODE_DEVICE_UNKNOWN":      3,
+	}
+)
+
+func (x ProtocolErrorCode) Enum() *ProtocolErrorCode {
+	p := new(ProtocolErrorCode)
+	*p = x
+	return p
+}
+
+func (x ProtocolErrorCode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ProtocolErrorCode) Descriptor() protoreflect.EnumDescriptor {
+	return file_walkie_v1_control_proto_enumTypes[2].Descriptor()
+}
+
+func (ProtocolErrorCode) Type() protoreflect.EnumType {
+	return &file_walkie_v1_control_proto_enumTypes[2]
+}
+
+func (x ProtocolErrorCode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ProtocolErrorCode.Descriptor instead.
+func (ProtocolErrorCode) EnumDescriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{2}
+}
+
 // Envelope wraps every control-plane message.
 type Envelope struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -36,11 +194,42 @@ type Envelope struct {
 	// retaining both this and the coordinator's receive time so the skew stays
 	// legible to the user rather than being silently resolved.
 	SentAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=sent_at,json=sentAt,proto3" json:"sent_at,omitempty"`
+	// position is the coordinator-assigned monotonic per-recipient delivery
+	// position, stamped onto envelopes replayed from the offline queue
+	// (adr:003-wire-protocol, "message identity"). It lives on the envelope
+	// rather than inside each payload because resumption is a property of
+	// DELIVERY, not of any one payload type: every queued message needs it,
+	// whatever it carries. Positions start at 1; zero means "live traffic, not
+	// a queue delivery", which keeps the two paths distinguishable at a glance.
+	// A client acknowledges a position only after durably processing it
+	// (QueueAck), and the coordinator resumes from there instead of replaying
+	// the whole queue — req:offline-delivery forbids full-replay resumption.
+	Position uint64 `protobuf:"varint,3,opt,name=position,proto3" json:"position,omitempty"`
+	// received_at is the coordinator's clock, stamped once when the coordinator
+	// receives the envelope from its sender. Paired with sent_at it makes clock
+	// skew legible instead of silently resolved (req:text-messaging). It is
+	// stamped at ingress and never rewritten: on queue replay it still says
+	// when the coordinator FIRST received the message, which is the fact the
+	// comparison is for. Coordinator-originated payloads (presence, directory,
+	// errors) leave it unset — there is no second clock involved.
+	ReceivedAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=received_at,json=receivedAt,proto3" json:"received_at,omitempty"`
 	// Types that are valid to be assigned to Payload:
 	//
 	//	*Envelope_Hello
 	//	*Envelope_HelloAck
 	//	*Envelope_Heartbeat
+	//	*Envelope_PresenceUpdate
+	//	*Envelope_PresenceStatusChange
+	//	*Envelope_DirectMessage
+	//	*Envelope_BroadcastMessage
+	//	*Envelope_AttachmentOffer
+	//	*Envelope_AttachmentChunk
+	//	*Envelope_AttachmentAck
+	//	*Envelope_QueueAck
+	//	*Envelope_QueueRefused
+	//	*Envelope_PublicKeyAnnounce
+	//	*Envelope_PublicKeyDirectory
+	//	*Envelope_ProtocolError
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -90,6 +279,20 @@ func (x *Envelope) GetSentAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Envelope) GetPosition() uint64 {
+	if x != nil {
+		return x.Position
+	}
+	return 0
+}
+
+func (x *Envelope) GetReceivedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ReceivedAt
+	}
+	return nil
+}
+
 func (x *Envelope) GetPayload() isEnvelope_Payload {
 	if x != nil {
 		return x.Payload
@@ -124,6 +327,114 @@ func (x *Envelope) GetHeartbeat() *Heartbeat {
 	return nil
 }
 
+func (x *Envelope) GetPresenceUpdate() *PresenceUpdate {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_PresenceUpdate); ok {
+			return x.PresenceUpdate
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetPresenceStatusChange() *PresenceStatusChange {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_PresenceStatusChange); ok {
+			return x.PresenceStatusChange
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetDirectMessage() *DirectMessage {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_DirectMessage); ok {
+			return x.DirectMessage
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetBroadcastMessage() *BroadcastMessage {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_BroadcastMessage); ok {
+			return x.BroadcastMessage
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetAttachmentOffer() *AttachmentOffer {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_AttachmentOffer); ok {
+			return x.AttachmentOffer
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetAttachmentChunk() *AttachmentChunk {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_AttachmentChunk); ok {
+			return x.AttachmentChunk
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetAttachmentAck() *AttachmentAck {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_AttachmentAck); ok {
+			return x.AttachmentAck
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetQueueAck() *QueueAck {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_QueueAck); ok {
+			return x.QueueAck
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetQueueRefused() *QueueRefused {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_QueueRefused); ok {
+			return x.QueueRefused
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetPublicKeyAnnounce() *PublicKeyAnnounce {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_PublicKeyAnnounce); ok {
+			return x.PublicKeyAnnounce
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetPublicKeyDirectory() *PublicKeyDirectory {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_PublicKeyDirectory); ok {
+			return x.PublicKeyDirectory
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetProtocolError() *ProtocolError {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_ProtocolError); ok {
+			return x.ProtocolError
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Payload interface {
 	isEnvelope_Payload()
 }
@@ -140,11 +451,83 @@ type Envelope_Heartbeat struct {
 	Heartbeat *Heartbeat `protobuf:"bytes,12,opt,name=heartbeat,proto3,oneof"`
 }
 
+type Envelope_PresenceUpdate struct {
+	PresenceUpdate *PresenceUpdate `protobuf:"bytes,13,opt,name=presence_update,json=presenceUpdate,proto3,oneof"`
+}
+
+type Envelope_PresenceStatusChange struct {
+	PresenceStatusChange *PresenceStatusChange `protobuf:"bytes,14,opt,name=presence_status_change,json=presenceStatusChange,proto3,oneof"`
+}
+
+type Envelope_DirectMessage struct {
+	DirectMessage *DirectMessage `protobuf:"bytes,15,opt,name=direct_message,json=directMessage,proto3,oneof"`
+}
+
+type Envelope_BroadcastMessage struct {
+	BroadcastMessage *BroadcastMessage `protobuf:"bytes,16,opt,name=broadcast_message,json=broadcastMessage,proto3,oneof"`
+}
+
+type Envelope_AttachmentOffer struct {
+	AttachmentOffer *AttachmentOffer `protobuf:"bytes,17,opt,name=attachment_offer,json=attachmentOffer,proto3,oneof"`
+}
+
+type Envelope_AttachmentChunk struct {
+	AttachmentChunk *AttachmentChunk `protobuf:"bytes,18,opt,name=attachment_chunk,json=attachmentChunk,proto3,oneof"`
+}
+
+type Envelope_AttachmentAck struct {
+	AttachmentAck *AttachmentAck `protobuf:"bytes,19,opt,name=attachment_ack,json=attachmentAck,proto3,oneof"`
+}
+
+type Envelope_QueueAck struct {
+	QueueAck *QueueAck `protobuf:"bytes,20,opt,name=queue_ack,json=queueAck,proto3,oneof"`
+}
+
+type Envelope_QueueRefused struct {
+	QueueRefused *QueueRefused `protobuf:"bytes,21,opt,name=queue_refused,json=queueRefused,proto3,oneof"`
+}
+
+type Envelope_PublicKeyAnnounce struct {
+	PublicKeyAnnounce *PublicKeyAnnounce `protobuf:"bytes,22,opt,name=public_key_announce,json=publicKeyAnnounce,proto3,oneof"`
+}
+
+type Envelope_PublicKeyDirectory struct {
+	PublicKeyDirectory *PublicKeyDirectory `protobuf:"bytes,23,opt,name=public_key_directory,json=publicKeyDirectory,proto3,oneof"`
+}
+
+type Envelope_ProtocolError struct {
+	ProtocolError *ProtocolError `protobuf:"bytes,24,opt,name=protocol_error,json=protocolError,proto3,oneof"`
+}
+
 func (*Envelope_Hello) isEnvelope_Payload() {}
 
 func (*Envelope_HelloAck) isEnvelope_Payload() {}
 
 func (*Envelope_Heartbeat) isEnvelope_Payload() {}
+
+func (*Envelope_PresenceUpdate) isEnvelope_Payload() {}
+
+func (*Envelope_PresenceStatusChange) isEnvelope_Payload() {}
+
+func (*Envelope_DirectMessage) isEnvelope_Payload() {}
+
+func (*Envelope_BroadcastMessage) isEnvelope_Payload() {}
+
+func (*Envelope_AttachmentOffer) isEnvelope_Payload() {}
+
+func (*Envelope_AttachmentChunk) isEnvelope_Payload() {}
+
+func (*Envelope_AttachmentAck) isEnvelope_Payload() {}
+
+func (*Envelope_QueueAck) isEnvelope_Payload() {}
+
+func (*Envelope_QueueRefused) isEnvelope_Payload() {}
+
+func (*Envelope_PublicKeyAnnounce) isEnvelope_Payload() {}
+
+func (*Envelope_PublicKeyDirectory) isEnvelope_Payload() {}
+
+func (*Envelope_ProtocolError) isEnvelope_Payload() {}
 
 // Hello opens a connection.
 //
@@ -163,8 +546,38 @@ type Hello struct {
 	// instead of replaying everything. Zero means "I have nothing yet".
 	// req:offline-delivery requires resumption by position.
 	LastAckedPosition uint64 `protobuf:"varint,2,opt,name=last_acked_position,json=lastAckedPosition,proto3" json:"last_acked_position,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// protocol_version is the schema version this client speaks, checked by the
+	// coordinator against the range it supports.
+	//
+	// SCHEMA-VERSION PLACEMENT DECISION (acceptance criterion 4 of
+	// ts:protocol-schema-v1): the explicit version lives in the handshake, not
+	// on the envelope. Reasons:
+	//
+	//  1. Version skew is a property of a CONNECTION — which build sits on
+	//     each end — not of an individual message. An envelope field would pay
+	//     bytes on every message, including every queued replay, for a value
+	//     that cannot legitimately vary within a connection. A sender whose
+	//     envelopes contradict its Hello is malfunctioning and should be
+	//     treated as malformed, not negotiated with.
+	//  2. The handshake is the one point where a mismatch can be refused
+	//     cheaply, before either side mutates state. The mismatch path is a
+	//     structured ProtocolError naming both versions — a legible
+	//     diagnostic — rather than a decode failure or a bare socket close.
+	//  3. The dangerous skew case is silent: an old peer ignores this field as
+	//     unknown and accepts the connection anyway. The counter is HelloAck
+	//     carrying the coordinator's own protocol_version, so a newer client
+	//     detects "the coordinator did not understand my version" by comparing
+	//     the ack against what it sent, and refuses locally with a clear
+	//     message. Both directions of skew therefore end in a diagnosable
+	//     outcome, never in silently misinterpreted traffic.
+	//
+	// Decode itself almost never fails across versions — proto3 unknown-field
+	// tolerance sees to that — so the version exists for the case where
+	// compatibility is genuinely not achievable and the peer deserves to be
+	// told why in words, not in a decoder error.
+	ProtocolVersion uint32 `protobuf:"varint,3,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Hello) Reset() {
@@ -211,6 +624,13 @@ func (x *Hello) GetLastAckedPosition() uint64 {
 	return 0
 }
 
+func (x *Hello) GetProtocolVersion() uint32 {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return 0
+}
+
 // HelloAck completes the handshake.
 type HelloAck struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -222,9 +642,15 @@ type HelloAck struct {
 	ReceivedAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=received_at,json=receivedAt,proto3" json:"received_at,omitempty"`
 	// pending_count is how many queued messages are about to be delivered, so
 	// the client can tell the user rather than appearing to hang.
-	PendingCount  uint64 `protobuf:"varint,3,opt,name=pending_count,json=pendingCount,proto3" json:"pending_count,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	PendingCount uint64 `protobuf:"varint,3,opt,name=pending_count,json=pendingCount,proto3" json:"pending_count,omitempty"`
+	// protocol_version is the coordinator's own schema version. Echoing it is
+	// what closes the silent-skew hole described on Hello.protocol_version: a
+	// client that spoke a newer version than the coordinator understands sees
+	// the older number here and knows its version field was ignored, instead of
+	// assuming mutual comprehension.
+	ProtocolVersion uint32 `protobuf:"varint,4,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *HelloAck) Reset() {
@@ -278,6 +704,13 @@ func (x *HelloAck) GetPendingCount() uint64 {
 	return 0
 }
 
+func (x *HelloAck) GetProtocolVersion() uint32 {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return 0
+}
+
 // Heartbeat keeps the connection observably alive.
 //
 // This is an application-level heartbeat and it is not redundant with TCP: a
@@ -321,29 +754,944 @@ func (*Heartbeat) Descriptor() ([]byte, []int) {
 	return file_walkie_v1_control_proto_rawDescGZIP(), []int{3}
 }
 
+// PresenceUpdate tells a connected client how another device's presence
+// changed. Coordinator → client only.
+//
+// This is the authoritative half of req:device-presence. The coordinator
+// derives online/offline from heartbeats it observes and transitions a device
+// to offline when the heartbeat lapses — a killed device produces an offline
+// update without ever announcing anything, which is the defining behaviour of
+// the presence design. There is deliberately no client→coordinator "I am
+// online" message in this schema; if one is ever proposed, the design review
+// failed.
+type PresenceUpdate struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// device is the device whose presence changed, named as the coordinator
+	// resolved it from the tailnet.
+	Device string `protobuf:"bytes,1,opt,name=device,proto3" json:"device,omitempty"`
+	// state is the new liveness verdict.
+	State PresenceState `protobuf:"varint,2,opt,name=state,proto3,enum=walkie.v1.PresenceState" json:"state,omitempty"`
+	// status is the device's custom status message, set by its user. Empty
+	// means none is set. It travels with the presence update so a roster entry
+	// can be rendered in one step; persistence across reconnects is the
+	// coordinator's job (req:device-presence), not the clients'.
+	Status string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	// last_seen is when the device was last observed alive, on the
+	// coordinator's clock. Required by req:device-presence for offline devices
+	// so the user can judge staleness themselves; unset while online.
+	LastSeen      *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=last_seen,json=lastSeen,proto3" json:"last_seen,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PresenceUpdate) Reset() {
+	*x = PresenceUpdate{}
+	mi := &file_walkie_v1_control_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PresenceUpdate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PresenceUpdate) ProtoMessage() {}
+
+func (x *PresenceUpdate) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PresenceUpdate.ProtoReflect.Descriptor instead.
+func (*PresenceUpdate) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *PresenceUpdate) GetDevice() string {
+	if x != nil {
+		return x.Device
+	}
+	return ""
+}
+
+func (x *PresenceUpdate) GetState() PresenceState {
+	if x != nil {
+		return x.State
+	}
+	return PresenceState_PRESENCE_STATE_UNSPECIFIED
+}
+
+func (x *PresenceUpdate) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *PresenceUpdate) GetLastSeen() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastSeen
+	}
+	return nil
+}
+
+// PresenceStatusChange is a client setting its own custom status message.
+// Client → coordinator only.
+//
+// It is careful to carry STATUS and nothing else: the status message is
+// user-authored text that req:device-presence requires to survive reconnects,
+// whereas liveness is server-derived and may never be asserted by a client.
+// Folding an online flag into this message would hand every client the power
+// to appear alive forever, defeating the liveness TTL.
+type PresenceStatusChange struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// status is the new custom status message; empty clears it.
+	Status        string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PresenceStatusChange) Reset() {
+	*x = PresenceStatusChange{}
+	mi := &file_walkie_v1_control_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PresenceStatusChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PresenceStatusChange) ProtoMessage() {}
+
+func (x *PresenceStatusChange) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PresenceStatusChange.ProtoReflect.Descriptor instead.
+func (*PresenceStatusChange) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *PresenceStatusChange) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+// DirectMessage is text addressed to one named device.
+// req:text-messaging is the owning requirement.
+type DirectMessage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// recipient is the destination device name. Routing by tailnet identity is
+	// the coordinator's job; the client only names the target.
+	Recipient string `protobuf:"bytes,1,opt,name=recipient,proto3" json:"recipient,omitempty"`
+	// body is the message text. Terminal-native plain text; rendering is the
+	// receiving client's business.
+	Body          string `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DirectMessage) Reset() {
+	*x = DirectMessage{}
+	mi := &file_walkie_v1_control_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DirectMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DirectMessage) ProtoMessage() {}
+
+func (x *DirectMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DirectMessage.ProtoReflect.Descriptor instead.
+func (*DirectMessage) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *DirectMessage) GetRecipient() string {
+	if x != nil {
+		return x.Recipient
+	}
+	return ""
+}
+
+func (x *DirectMessage) GetBody() string {
+	if x != nil {
+		return x.Body
+	}
+	return ""
+}
+
+// BroadcastMessage is text delivered to every device currently registered
+// with the coordinator. req:text-messaging.
+type BroadcastMessage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// body is the message text, as with DirectMessage.
+	Body          string `protobuf:"bytes,1,opt,name=body,proto3" json:"body,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BroadcastMessage) Reset() {
+	*x = BroadcastMessage{}
+	mi := &file_walkie_v1_control_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BroadcastMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BroadcastMessage) ProtoMessage() {}
+
+func (x *BroadcastMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BroadcastMessage.ProtoReflect.Descriptor instead.
+func (*BroadcastMessage) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *BroadcastMessage) GetBody() string {
+	if x != nil {
+		return x.Body
+	}
+	return ""
+}
+
+// AttachmentOffer announces a file about to be transferred in chunks — in the
+// MVP always a voice note (audio/*), carried on this control plane because it
+// has no playback deadline; the deadline-bearing real-time audio path is the
+// phase-2 UDP data plane and must never be routed through these messages.
+//
+// Offer-first (rather than one giant message with all bytes) because a single
+// protobuf message holding a whole recording forces the receiver to buffer it
+// whole and gives the UI nothing to show meanwhile; chunks let progress track
+// real arrival and keep peak memory at one chunk.
+type AttachmentOffer struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// attachment_id is a ULID grouping the offer with its chunks and acks, the
+	// same idempotency trick as Envelope.message_id: chunks retransmitted after
+	// a reconnect are recognised and dropped by the receiver.
+	AttachmentId string `protobuf:"bytes,1,opt,name=attachment_id,json=attachmentId,proto3" json:"attachment_id,omitempty"`
+	// filename is the suggested on-disk name, e.g. "2026-08-21T10-30-note.ogg".
+	Filename string `protobuf:"bytes,2,opt,name=filename,proto3" json:"filename,omitempty"`
+	// size_bytes is the total transfer size, so the receiver can preallocate
+	// and the UI can show a fraction complete.
+	SizeBytes uint64 `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	// mime_type describes the payload, e.g. "audio/ogg".
+	MimeType string `protobuf:"bytes,4,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
+	// sha256 is the digest of the complete file, verified after the last chunk.
+	// End-to-end integrity matters even over WireGuard-protected links: the
+	// coordinator relays bytes it cannot read (sealed-boxed payloads,
+	// adr:004-security-model), so only the endpoints can actually check them.
+	Sha256 []byte `protobuf:"bytes,5,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	// chunk_size is how many bytes each following AttachmentChunk.data carries
+	// (the final chunk may be short). Declared up front so the receiver can
+	// buffer without guessing.
+	ChunkSize     uint32 `protobuf:"varint,6,opt,name=chunk_size,json=chunkSize,proto3" json:"chunk_size,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AttachmentOffer) Reset() {
+	*x = AttachmentOffer{}
+	mi := &file_walkie_v1_control_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AttachmentOffer) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AttachmentOffer) ProtoMessage() {}
+
+func (x *AttachmentOffer) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AttachmentOffer.ProtoReflect.Descriptor instead.
+func (*AttachmentOffer) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *AttachmentOffer) GetAttachmentId() string {
+	if x != nil {
+		return x.AttachmentId
+	}
+	return ""
+}
+
+func (x *AttachmentOffer) GetFilename() string {
+	if x != nil {
+		return x.Filename
+	}
+	return ""
+}
+
+func (x *AttachmentOffer) GetSizeBytes() uint64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *AttachmentOffer) GetMimeType() string {
+	if x != nil {
+		return x.MimeType
+	}
+	return ""
+}
+
+func (x *AttachmentOffer) GetSha256() []byte {
+	if x != nil {
+		return x.Sha256
+	}
+	return nil
+}
+
+func (x *AttachmentOffer) GetChunkSize() uint32 {
+	if x != nil {
+		return x.ChunkSize
+	}
+	return 0
+}
+
+// AttachmentChunk carries one slice of an announced attachment.
+type AttachmentChunk struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// attachment_id ties the chunk to its AttachmentOffer.
+	AttachmentId string `protobuf:"bytes,1,opt,name=attachment_id,json=attachmentId,proto3" json:"attachment_id,omitempty"`
+	// index is the zero-based chunk ordinal. Chunks may arrive out of order
+	// after a reconnect; the index, not arrival order, places the bytes.
+	Index uint64 `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	// data is the chunk payload, at most offer.chunk_size bytes.
+	Data          []byte `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AttachmentChunk) Reset() {
+	*x = AttachmentChunk{}
+	mi := &file_walkie_v1_control_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AttachmentChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AttachmentChunk) ProtoMessage() {}
+
+func (x *AttachmentChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AttachmentChunk.ProtoReflect.Descriptor instead.
+func (*AttachmentChunk) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *AttachmentChunk) GetAttachmentId() string {
+	if x != nil {
+		return x.AttachmentId
+	}
+	return ""
+}
+
+func (x *AttachmentChunk) GetIndex() uint64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *AttachmentChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+// AttachmentAck reports durable receipt of attachment bytes, flowing recipient
+// → sender through the coordinator.
+//
+// It counts ACKNOWLEDGED bytes only. The repo-wide rule — progress reflects
+// acknowledged bytes, never bytes handed to the network — exists because the
+// alternative lies twice: once when the network drops what was "sent", and
+// again when a receiver dies holding bytes it never durably wrote.
+type AttachmentAck struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// attachment_id ties the ack to its AttachmentOffer.
+	AttachmentId string `protobuf:"bytes,1,opt,name=attachment_id,json=attachmentId,proto3" json:"attachment_id,omitempty"`
+	// acknowledged_bytes is the cumulative total durably received so far,
+	// monotonic across the attachment. Progress bars divide this by
+	// offer.size_bytes; completion equals it.
+	AcknowledgedBytes uint64 `protobuf:"varint,2,opt,name=acknowledged_bytes,json=acknowledgedBytes,proto3" json:"acknowledged_bytes,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *AttachmentAck) Reset() {
+	*x = AttachmentAck{}
+	mi := &file_walkie_v1_control_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AttachmentAck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AttachmentAck) ProtoMessage() {}
+
+func (x *AttachmentAck) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AttachmentAck.ProtoReflect.Descriptor instead.
+func (*AttachmentAck) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *AttachmentAck) GetAttachmentId() string {
+	if x != nil {
+		return x.AttachmentId
+	}
+	return ""
+}
+
+func (x *AttachmentAck) GetAcknowledgedBytes() uint64 {
+	if x != nil {
+		return x.AcknowledgedBytes
+	}
+	return 0
+}
+
+// QueueAck tells the coordinator that every queued envelope up to and including
+// a position has been durably processed. Client → coordinator only.
+//
+// Together with Envelope.position and Hello.last_acked_position this is the
+// whole resumption mechanism: the coordinator advances its cursor and future
+// reconnects replay from there, instead of re-sending everything and leaning
+// on ULID deduplication to hide the waste. Acknowledging a position the
+// client has not durably processed is the one way to lose a queued message —
+// acknowledge only what is on disk.
+type QueueAck struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// acknowledged_position is the high-water mark; everything ≤ it is done.
+	AcknowledgedPosition uint64 `protobuf:"varint,1,opt,name=acknowledged_position,json=acknowledgedPosition,proto3" json:"acknowledged_position,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *QueueAck) Reset() {
+	*x = QueueAck{}
+	mi := &file_walkie_v1_control_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueueAck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueueAck) ProtoMessage() {}
+
+func (x *QueueAck) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueueAck.ProtoReflect.Descriptor instead.
+func (*QueueAck) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *QueueAck) GetAcknowledgedPosition() uint64 {
+	if x != nil {
+		return x.AcknowledgedPosition
+	}
+	return 0
+}
+
+// QueueRefused is the coordinator's explicit refusal to retain a message for
+// an offline recipient. Coordinator → client only.
+//
+// req:offline-delivery requires retention to be bounded by BOTH a TTL and a
+// size cap, and requires that hitting the cap be REPORTED: an unbounded queue
+// is a disk-exhaustion path, and a silent drop is worse — the sender believes
+// delivery is pending when it has already been discarded. TTL expiry is
+// deliberately NOT a refusal: individual messages expiring quietly is bounded
+// retention working as designed, visible in logs, not an error to put on the
+// wire.
+type QueueRefused struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// reason discriminates why retention was refused.
+	Reason QueueRefusalReason `protobuf:"varint,1,opt,name=reason,proto3,enum=walkie.v1.QueueRefusalReason" json:"reason,omitempty"`
+	// detail is a human-readable explanation for the terminal, e.g. naming the
+	// configured cap and the attempted size.
+	Detail        string `protobuf:"bytes,2,opt,name=detail,proto3" json:"detail,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QueueRefused) Reset() {
+	*x = QueueRefused{}
+	mi := &file_walkie_v1_control_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueueRefused) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueueRefused) ProtoMessage() {}
+
+func (x *QueueRefused) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueueRefused.ProtoReflect.Descriptor instead.
+func (*QueueRefused) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *QueueRefused) GetReason() QueueRefusalReason {
+	if x != nil {
+		return x.Reason
+	}
+	return QueueRefusalReason_QUEUE_REFUSAL_REASON_UNSPECIFIED
+}
+
+func (x *QueueRefused) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+// PublicKeyAnnounce publishes the sender's X25519 public key so that peers can
+// seal payloads to it. Client → coordinator only.
+//
+// adr:004-security-model scopes application crypto to the coordinator's blind
+// spots — offline-queue storage and the phase-2 relay fallback — and seals
+// with X25519 + XChaCha20-Poly1305. Trust is on first use: the coordinator
+// records the first key it sees for a device, and a DIFFERENT key later is
+// not silently accepted but flagged loudly and held for confirmation, because
+// a swapped key is indistinguishable from an interception without that
+// friction. Announcing an unchanged key is idempotent.
+type PublicKeyAnnounce struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// public_key is the raw 32-byte X25519 public key. No certificate and no
+	// signature chain: identity comes from the tailnet (WhoIs), and the key
+	// binding is TOFU-pinned per device.
+	PublicKey     []byte `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublicKeyAnnounce) Reset() {
+	*x = PublicKeyAnnounce{}
+	mi := &file_walkie_v1_control_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublicKeyAnnounce) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublicKeyAnnounce) ProtoMessage() {}
+
+func (x *PublicKeyAnnounce) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublicKeyAnnounce.ProtoReflect.Descriptor instead.
+func (*PublicKeyAnnounce) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *PublicKeyAnnounce) GetPublicKey() []byte {
+	if x != nil {
+		return x.PublicKey
+	}
+	return nil
+}
+
+// PublicKeyEntry is one device's published key inside a directory snapshot.
+type PublicKeyEntry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// device is the key owner, named as the coordinator resolved it.
+	Device string `protobuf:"bytes,1,opt,name=device,proto3" json:"device,omitempty"`
+	// public_key is the owner's raw 32-byte X25519 public key.
+	PublicKey     []byte `protobuf:"bytes,2,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublicKeyEntry) Reset() {
+	*x = PublicKeyEntry{}
+	mi := &file_walkie_v1_control_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublicKeyEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublicKeyEntry) ProtoMessage() {}
+
+func (x *PublicKeyEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublicKeyEntry.ProtoReflect.Descriptor instead.
+func (*PublicKeyEntry) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *PublicKeyEntry) GetDevice() string {
+	if x != nil {
+		return x.Device
+	}
+	return ""
+}
+
+func (x *PublicKeyEntry) GetPublicKey() []byte {
+	if x != nil {
+		return x.PublicKey
+	}
+	return nil
+}
+
+// PublicKeyDirectory distributes peers' public keys as a full snapshot.
+// Coordinator → client only.
+//
+// A snapshot (repeated entries, replace-whole-state) rather than per-key
+// deltas because the consumer is a local cache that must be complete before
+// sealing anything: with deltas, "seal to this peer" races "key not yet
+// received". Snapshot-at-hello plus replace-on-change is trivially correct,
+// and fleet-scale key counts make bandwidth irrelevant.
+type PublicKeyDirectory struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// entries is the current device→key table, replacing any earlier snapshot.
+	Entries       []*PublicKeyEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublicKeyDirectory) Reset() {
+	*x = PublicKeyDirectory{}
+	mi := &file_walkie_v1_control_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublicKeyDirectory) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublicKeyDirectory) ProtoMessage() {}
+
+func (x *PublicKeyDirectory) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublicKeyDirectory.ProtoReflect.Descriptor instead.
+func (*PublicKeyDirectory) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *PublicKeyDirectory) GetEntries() []*PublicKeyEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+// ProtocolError is an explicit, structured refusal sent in band instead of
+// closing the socket or failing to decode.
+//
+// This message is what makes the schema-version criterion honest: a version
+// mismatch MUST produce a diagnostic the peer can display — code, both
+// versions, human-readable detail — not a WebSocket close code nobody can act
+// on and not a decoder error that blames the wrong layer. It doubles as the
+// rejection channel for other unrecoverable protocol violations, so the
+// client has exactly one error shape to render.
+type ProtocolError struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// code is the machine-readable reason.
+	Code ProtocolErrorCode `protobuf:"varint,1,opt,name=code,proto3,enum=walkie.v1.ProtocolErrorCode" json:"code,omitempty"`
+	// detail is a human-readable explanation, written to be shown to a terminal
+	// user verbatim.
+	Detail string `protobuf:"bytes,2,opt,name=detail,proto3" json:"detail,omitempty"`
+	// protocol_version echoes the version that triggered the refusal when code
+	// is VERSION_UNSUPPORTED (what the PEER claimed, so the diagnostic can name
+	// both sides); zero otherwise.
+	ProtocolVersion uint32 `protobuf:"varint,3,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ProtocolError) Reset() {
+	*x = ProtocolError{}
+	mi := &file_walkie_v1_control_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProtocolError) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProtocolError) ProtoMessage() {}
+
+func (x *ProtocolError) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProtocolError.ProtoReflect.Descriptor instead.
+func (*ProtocolError) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ProtocolError) GetCode() ProtocolErrorCode {
+	if x != nil {
+		return x.Code
+	}
+	return ProtocolErrorCode_PROTOCOL_ERROR_CODE_UNSPECIFIED
+}
+
+func (x *ProtocolError) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+func (x *ProtocolError) GetProtocolVersion() uint32 {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return 0
+}
+
 var File_walkie_v1_control_proto protoreflect.FileDescriptor
 
 const file_walkie_v1_control_proto_rawDesc = "" +
 	"\n" +
-	"\x17walkie/v1/control.proto\x12\twalkie.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfd\x01\n" +
+	"\x17walkie/v1/control.proto\x12\twalkie.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb3\t\n" +
 	"\bEnvelope\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\tR\tmessageId\x123\n" +
-	"\asent_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x06sentAt\x12(\n" +
+	"\asent_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x06sentAt\x12\x1a\n" +
+	"\bposition\x18\x03 \x01(\x04R\bposition\x12;\n" +
+	"\vreceived_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"receivedAt\x12(\n" +
 	"\x05hello\x18\n" +
 	" \x01(\v2\x10.walkie.v1.HelloH\x00R\x05hello\x122\n" +
 	"\thello_ack\x18\v \x01(\v2\x13.walkie.v1.HelloAckH\x00R\bhelloAck\x124\n" +
-	"\theartbeat\x18\f \x01(\v2\x14.walkie.v1.HeartbeatH\x00R\theartbeatB\t\n" +
-	"\apayload\"^\n" +
+	"\theartbeat\x18\f \x01(\v2\x14.walkie.v1.HeartbeatH\x00R\theartbeat\x12D\n" +
+	"\x0fpresence_update\x18\r \x01(\v2\x19.walkie.v1.PresenceUpdateH\x00R\x0epresenceUpdate\x12W\n" +
+	"\x16presence_status_change\x18\x0e \x01(\v2\x1f.walkie.v1.PresenceStatusChangeH\x00R\x14presenceStatusChange\x12A\n" +
+	"\x0edirect_message\x18\x0f \x01(\v2\x18.walkie.v1.DirectMessageH\x00R\rdirectMessage\x12J\n" +
+	"\x11broadcast_message\x18\x10 \x01(\v2\x1b.walkie.v1.BroadcastMessageH\x00R\x10broadcastMessage\x12G\n" +
+	"\x10attachment_offer\x18\x11 \x01(\v2\x1a.walkie.v1.AttachmentOfferH\x00R\x0fattachmentOffer\x12G\n" +
+	"\x10attachment_chunk\x18\x12 \x01(\v2\x1a.walkie.v1.AttachmentChunkH\x00R\x0fattachmentChunk\x12A\n" +
+	"\x0eattachment_ack\x18\x13 \x01(\v2\x18.walkie.v1.AttachmentAckH\x00R\rattachmentAck\x122\n" +
+	"\tqueue_ack\x18\x14 \x01(\v2\x13.walkie.v1.QueueAckH\x00R\bqueueAck\x12>\n" +
+	"\rqueue_refused\x18\x15 \x01(\v2\x17.walkie.v1.QueueRefusedH\x00R\fqueueRefused\x12N\n" +
+	"\x13public_key_announce\x18\x16 \x01(\v2\x1c.walkie.v1.PublicKeyAnnounceH\x00R\x11publicKeyAnnounce\x12Q\n" +
+	"\x14public_key_directory\x18\x17 \x01(\v2\x1d.walkie.v1.PublicKeyDirectoryH\x00R\x12publicKeyDirectory\x12A\n" +
+	"\x0eprotocol_error\x18\x18 \x01(\v2\x18.walkie.v1.ProtocolErrorH\x00R\rprotocolErrorB\t\n" +
+	"\apayload\"\x89\x01\n" +
 	"\x05Hello\x12%\n" +
 	"\x0eclient_version\x18\x01 \x01(\tR\rclientVersion\x12.\n" +
-	"\x13last_acked_position\x18\x02 \x01(\x04R\x11lastAckedPosition\"\x84\x01\n" +
+	"\x13last_acked_position\x18\x02 \x01(\x04R\x11lastAckedPosition\x12)\n" +
+	"\x10protocol_version\x18\x03 \x01(\rR\x0fprotocolVersion\"\xaf\x01\n" +
 	"\bHelloAck\x12\x16\n" +
 	"\x06device\x18\x01 \x01(\tR\x06device\x12;\n" +
 	"\vreceived_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"receivedAt\x12#\n" +
-	"\rpending_count\x18\x03 \x01(\x04R\fpendingCount\"\v\n" +
-	"\tHeartbeatBBZ@github.com/maleolabs/walkie/internal/genproto/walkie/v1;walkiev1b\x06proto3"
+	"\rpending_count\x18\x03 \x01(\x04R\fpendingCount\x12)\n" +
+	"\x10protocol_version\x18\x04 \x01(\rR\x0fprotocolVersion\"\v\n" +
+	"\tHeartbeat\"\xa9\x01\n" +
+	"\x0ePresenceUpdate\x12\x16\n" +
+	"\x06device\x18\x01 \x01(\tR\x06device\x12.\n" +
+	"\x05state\x18\x02 \x01(\x0e2\x18.walkie.v1.PresenceStateR\x05state\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x127\n" +
+	"\tlast_seen\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen\".\n" +
+	"\x14PresenceStatusChange\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\"A\n" +
+	"\rDirectMessage\x12\x1c\n" +
+	"\trecipient\x18\x01 \x01(\tR\trecipient\x12\x12\n" +
+	"\x04body\x18\x02 \x01(\tR\x04body\"&\n" +
+	"\x10BroadcastMessage\x12\x12\n" +
+	"\x04body\x18\x01 \x01(\tR\x04body\"\xc5\x01\n" +
+	"\x0fAttachmentOffer\x12#\n" +
+	"\rattachment_id\x18\x01 \x01(\tR\fattachmentId\x12\x1a\n" +
+	"\bfilename\x18\x02 \x01(\tR\bfilename\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x03 \x01(\x04R\tsizeBytes\x12\x1b\n" +
+	"\tmime_type\x18\x04 \x01(\tR\bmimeType\x12\x16\n" +
+	"\x06sha256\x18\x05 \x01(\fR\x06sha256\x12\x1d\n" +
+	"\n" +
+	"chunk_size\x18\x06 \x01(\rR\tchunkSize\"`\n" +
+	"\x0fAttachmentChunk\x12#\n" +
+	"\rattachment_id\x18\x01 \x01(\tR\fattachmentId\x12\x14\n" +
+	"\x05index\x18\x02 \x01(\x04R\x05index\x12\x12\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\"c\n" +
+	"\rAttachmentAck\x12#\n" +
+	"\rattachment_id\x18\x01 \x01(\tR\fattachmentId\x12-\n" +
+	"\x12acknowledged_bytes\x18\x02 \x01(\x04R\x11acknowledgedBytes\"?\n" +
+	"\bQueueAck\x123\n" +
+	"\x15acknowledged_position\x18\x01 \x01(\x04R\x14acknowledgedPosition\"]\n" +
+	"\fQueueRefused\x125\n" +
+	"\x06reason\x18\x01 \x01(\x0e2\x1d.walkie.v1.QueueRefusalReasonR\x06reason\x12\x16\n" +
+	"\x06detail\x18\x02 \x01(\tR\x06detail\"2\n" +
+	"\x11PublicKeyAnnounce\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\x01 \x01(\fR\tpublicKey\"G\n" +
+	"\x0ePublicKeyEntry\x12\x16\n" +
+	"\x06device\x18\x01 \x01(\tR\x06device\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\x02 \x01(\fR\tpublicKey\"I\n" +
+	"\x12PublicKeyDirectory\x123\n" +
+	"\aentries\x18\x01 \x03(\v2\x19.walkie.v1.PublicKeyEntryR\aentries\"\x84\x01\n" +
+	"\rProtocolError\x120\n" +
+	"\x04code\x18\x01 \x01(\x0e2\x1c.walkie.v1.ProtocolErrorCodeR\x04code\x12\x16\n" +
+	"\x06detail\x18\x02 \x01(\tR\x06detail\x12)\n" +
+	"\x10protocol_version\x18\x03 \x01(\rR\x0fprotocolVersion*f\n" +
+	"\rPresenceState\x12\x1e\n" +
+	"\x1aPRESENCE_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15PRESENCE_STATE_ONLINE\x10\x01\x12\x1a\n" +
+	"\x16PRESENCE_STATE_OFFLINE\x10\x02*]\n" +
+	"\x12QueueRefusalReason\x12$\n" +
+	" QUEUE_REFUSAL_REASON_UNSPECIFIED\x10\x00\x12!\n" +
+	"\x1dQUEUE_REFUSAL_REASON_SIZE_CAP\x10\x01*\xb0\x01\n" +
+	"\x11ProtocolErrorCode\x12#\n" +
+	"\x1fPROTOCOL_ERROR_CODE_UNSPECIFIED\x10\x00\x12+\n" +
+	"'PROTOCOL_ERROR_CODE_VERSION_UNSUPPORTED\x10\x01\x12!\n" +
+	"\x1dPROTOCOL_ERROR_CODE_MALFORMED\x10\x02\x12&\n" +
+	"\"PROTOCOL_ERROR_CODE_DEVICE_UNKNOWN\x10\x03BBZ@github.com/maleolabs/walkie/internal/genproto/walkie/v1;walkiev1b\x06proto3"
 
 var (
 	file_walkie_v1_control_proto_rawDescOnce sync.Once
@@ -357,25 +1705,60 @@ func file_walkie_v1_control_proto_rawDescGZIP() []byte {
 	return file_walkie_v1_control_proto_rawDescData
 }
 
-var file_walkie_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_walkie_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_walkie_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_walkie_v1_control_proto_goTypes = []any{
-	(*Envelope)(nil),              // 0: walkie.v1.Envelope
-	(*Hello)(nil),                 // 1: walkie.v1.Hello
-	(*HelloAck)(nil),              // 2: walkie.v1.HelloAck
-	(*Heartbeat)(nil),             // 3: walkie.v1.Heartbeat
-	(*timestamppb.Timestamp)(nil), // 4: google.protobuf.Timestamp
+	(PresenceState)(0),            // 0: walkie.v1.PresenceState
+	(QueueRefusalReason)(0),       // 1: walkie.v1.QueueRefusalReason
+	(ProtocolErrorCode)(0),        // 2: walkie.v1.ProtocolErrorCode
+	(*Envelope)(nil),              // 3: walkie.v1.Envelope
+	(*Hello)(nil),                 // 4: walkie.v1.Hello
+	(*HelloAck)(nil),              // 5: walkie.v1.HelloAck
+	(*Heartbeat)(nil),             // 6: walkie.v1.Heartbeat
+	(*PresenceUpdate)(nil),        // 7: walkie.v1.PresenceUpdate
+	(*PresenceStatusChange)(nil),  // 8: walkie.v1.PresenceStatusChange
+	(*DirectMessage)(nil),         // 9: walkie.v1.DirectMessage
+	(*BroadcastMessage)(nil),      // 10: walkie.v1.BroadcastMessage
+	(*AttachmentOffer)(nil),       // 11: walkie.v1.AttachmentOffer
+	(*AttachmentChunk)(nil),       // 12: walkie.v1.AttachmentChunk
+	(*AttachmentAck)(nil),         // 13: walkie.v1.AttachmentAck
+	(*QueueAck)(nil),              // 14: walkie.v1.QueueAck
+	(*QueueRefused)(nil),          // 15: walkie.v1.QueueRefused
+	(*PublicKeyAnnounce)(nil),     // 16: walkie.v1.PublicKeyAnnounce
+	(*PublicKeyEntry)(nil),        // 17: walkie.v1.PublicKeyEntry
+	(*PublicKeyDirectory)(nil),    // 18: walkie.v1.PublicKeyDirectory
+	(*ProtocolError)(nil),         // 19: walkie.v1.ProtocolError
+	(*timestamppb.Timestamp)(nil), // 20: google.protobuf.Timestamp
 }
 var file_walkie_v1_control_proto_depIdxs = []int32{
-	4, // 0: walkie.v1.Envelope.sent_at:type_name -> google.protobuf.Timestamp
-	1, // 1: walkie.v1.Envelope.hello:type_name -> walkie.v1.Hello
-	2, // 2: walkie.v1.Envelope.hello_ack:type_name -> walkie.v1.HelloAck
-	3, // 3: walkie.v1.Envelope.heartbeat:type_name -> walkie.v1.Heartbeat
-	4, // 4: walkie.v1.HelloAck.received_at:type_name -> google.protobuf.Timestamp
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	20, // 0: walkie.v1.Envelope.sent_at:type_name -> google.protobuf.Timestamp
+	20, // 1: walkie.v1.Envelope.received_at:type_name -> google.protobuf.Timestamp
+	4,  // 2: walkie.v1.Envelope.hello:type_name -> walkie.v1.Hello
+	5,  // 3: walkie.v1.Envelope.hello_ack:type_name -> walkie.v1.HelloAck
+	6,  // 4: walkie.v1.Envelope.heartbeat:type_name -> walkie.v1.Heartbeat
+	7,  // 5: walkie.v1.Envelope.presence_update:type_name -> walkie.v1.PresenceUpdate
+	8,  // 6: walkie.v1.Envelope.presence_status_change:type_name -> walkie.v1.PresenceStatusChange
+	9,  // 7: walkie.v1.Envelope.direct_message:type_name -> walkie.v1.DirectMessage
+	10, // 8: walkie.v1.Envelope.broadcast_message:type_name -> walkie.v1.BroadcastMessage
+	11, // 9: walkie.v1.Envelope.attachment_offer:type_name -> walkie.v1.AttachmentOffer
+	12, // 10: walkie.v1.Envelope.attachment_chunk:type_name -> walkie.v1.AttachmentChunk
+	13, // 11: walkie.v1.Envelope.attachment_ack:type_name -> walkie.v1.AttachmentAck
+	14, // 12: walkie.v1.Envelope.queue_ack:type_name -> walkie.v1.QueueAck
+	15, // 13: walkie.v1.Envelope.queue_refused:type_name -> walkie.v1.QueueRefused
+	16, // 14: walkie.v1.Envelope.public_key_announce:type_name -> walkie.v1.PublicKeyAnnounce
+	18, // 15: walkie.v1.Envelope.public_key_directory:type_name -> walkie.v1.PublicKeyDirectory
+	19, // 16: walkie.v1.Envelope.protocol_error:type_name -> walkie.v1.ProtocolError
+	20, // 17: walkie.v1.HelloAck.received_at:type_name -> google.protobuf.Timestamp
+	0,  // 18: walkie.v1.PresenceUpdate.state:type_name -> walkie.v1.PresenceState
+	20, // 19: walkie.v1.PresenceUpdate.last_seen:type_name -> google.protobuf.Timestamp
+	1,  // 20: walkie.v1.QueueRefused.reason:type_name -> walkie.v1.QueueRefusalReason
+	17, // 21: walkie.v1.PublicKeyDirectory.entries:type_name -> walkie.v1.PublicKeyEntry
+	2,  // 22: walkie.v1.ProtocolError.code:type_name -> walkie.v1.ProtocolErrorCode
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_walkie_v1_control_proto_init() }
@@ -387,19 +1770,32 @@ func file_walkie_v1_control_proto_init() {
 		(*Envelope_Hello)(nil),
 		(*Envelope_HelloAck)(nil),
 		(*Envelope_Heartbeat)(nil),
+		(*Envelope_PresenceUpdate)(nil),
+		(*Envelope_PresenceStatusChange)(nil),
+		(*Envelope_DirectMessage)(nil),
+		(*Envelope_BroadcastMessage)(nil),
+		(*Envelope_AttachmentOffer)(nil),
+		(*Envelope_AttachmentChunk)(nil),
+		(*Envelope_AttachmentAck)(nil),
+		(*Envelope_QueueAck)(nil),
+		(*Envelope_QueueRefused)(nil),
+		(*Envelope_PublicKeyAnnounce)(nil),
+		(*Envelope_PublicKeyDirectory)(nil),
+		(*Envelope_ProtocolError)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_walkie_v1_control_proto_rawDesc), len(file_walkie_v1_control_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   4,
+			NumEnums:      3,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_walkie_v1_control_proto_goTypes,
 		DependencyIndexes: file_walkie_v1_control_proto_depIdxs,
+		EnumInfos:         file_walkie_v1_control_proto_enumTypes,
 		MessageInfos:      file_walkie_v1_control_proto_msgTypes,
 	}.Build()
 	File_walkie_v1_control_proto = out.File
