@@ -853,6 +853,10 @@ func (x *PresenceUpdate) GetLastSeen() *timestamppb.Timestamp {
 type PresenceStatusChange struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// status is the new custom status message; empty clears it.
+	//
+	// Receiver-enforced bound: at most 256 bytes of UTF-8 — a roster line, not
+	// a message. proto3 cannot express field bounds, so the receiver MUST
+	// reject a longer status rather than truncate it (req:device-presence).
 	Status        string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -904,6 +908,13 @@ type DirectMessage struct {
 	Recipient string `protobuf:"bytes,1,opt,name=recipient,proto3" json:"recipient,omitempty"`
 	// body is the message text. Terminal-native plain text; rendering is the
 	// receiving client's business.
+	//
+	// Receiver-enforced bound: at most 4096 bytes of UTF-8. proto3 cannot
+	// express field bounds, so enforcement lives in the receiver, which MUST
+	// reject longer bodies rather than truncate them — a truncated message reads
+	// as delivered-but-wrong. Sized generously for terminal chat while keeping
+	// one oversized message from dominating the offline queue's bounded
+	// retention (req:text-messaging, req:offline-delivery).
 	Body          string `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -957,7 +968,9 @@ func (x *DirectMessage) GetBody() string {
 // with the coordinator. req:text-messaging.
 type BroadcastMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// body is the message text, as with DirectMessage.
+	// body is the message text, as with DirectMessage — same receiver-enforced
+	// bound of at most 4096 bytes of UTF-8, rejected (not truncated) when
+	// exceeded.
 	Body          string `protobuf:"bytes,1,opt,name=body,proto3" json:"body,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1030,6 +1043,12 @@ type AttachmentOffer struct {
 	// chunk_size is how many bytes each following AttachmentChunk.data carries
 	// (the final chunk may be short). Declared up front so the receiver can
 	// buffer without guessing.
+	//
+	// Receiver-enforced bound: at most 1 MiB (1_048_576 bytes), matching the
+	// repo-wide content-addressed chunk convention. proto3 cannot express field
+	// bounds, so enforcement lives in the receiver, which MUST reject an offer
+	// exceeding it — a hostile or corrupt offer must not be able to claim
+	// multi-GiB chunks and command a matching allocation.
 	ChunkSize     uint32 `protobuf:"varint,6,opt,name=chunk_size,json=chunkSize,proto3" json:"chunk_size,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1474,9 +1493,17 @@ func (x *PublicKeyEntry) GetPublicKey() []byte {
 // sealing anything: with deltas, "seal to this peer" races "key not yet
 // received". Snapshot-at-hello plus replace-on-change is trivially correct,
 // and fleet-scale key counts make bandwidth irrelevant.
+//
+// Replace-all describes DELIVERY, never trust: applying a snapshot that
+// changes the key of a known peer does not license a silent pin overwrite.
+// The TOFU rule documented on PublicKeyAnnounce (adr:004-security-model)
+// applies unchanged — warn loudly and require confirmation before trusting
+// the new key; the directory merely delivers the change.
 type PublicKeyDirectory struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// entries is the current device→key table, replacing any earlier snapshot.
+	// See the message comment above: replacement never bypasses the TOFU
+	// confirmation duty on a changed key for a known peer.
 	Entries       []*PublicKeyEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
