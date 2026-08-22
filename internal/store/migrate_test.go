@@ -46,7 +46,10 @@ func TestApplyMigrationsAppliesInOrderAndRecordsVersions(t *testing.T) {
 	}
 	defer rows.Close()
 
-	type entry struct{ version int64; name, appliedAt string }
+	type entry struct {
+		version         int64
+		name, appliedAt string
+	}
 	var got []entry
 	for rows.Next() {
 		var e entry
