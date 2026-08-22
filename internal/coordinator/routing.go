@@ -2,12 +2,14 @@ package coordinator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/maleolabs/walkie/internal/coordinator/queue"
 	"github.com/maleolabs/walkie/internal/coordinator/tsauth"
 	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
 	"github.com/maleolabs/walkie/internal/message"
@@ -40,20 +42,37 @@ import (
 // contract, and half-building it here would produce an unbounded queue by
 // accident.
 
-// OfflineSink receives an envelope whose recipient has no live connection.
+// OfflineSink is sto:offline-queue's seam on this file: where messages for
+// devices with no live connection go, and the surface the handshake drains.
 //
-// EXTENSION POINT, deliberately minimal. sto:offline-queue will provide the
-// production implementation: bounded retention (TTL AND size cap, per
-// req:offline-delivery), explicit QueueRefused on cap, position-stamped
-// replay. Until that item lands, the server runs with a nil sink and DROPS
-// with a loud log line rather than pretending to retain — a silent fake queue
-// would make senders believe delivery is pending when nothing is.
+// Deliver receives the already-stamped envelope verbatim, so a replay path
+// cannot restamp received_at even by accident: the stamp was applied at
+// ingress, before this seam ever saw the message. It returns a typed refusal
+// when retention is REFUSED — a *queue.CapacityError means the recipient's
+// inbox is at its size cap, and deliverUnroutable turns that into an explicit
+// QueueRefused{SIZE_CAP} on the SENDER's connection (req:offline-delivery:
+// told to sender AND logged AND no growth past the cap). Any other error is
+// an internal failure: logged loudly, never shaped into wire blame, and the
+// sender's outbox retry covers the loss.
 //
-// Deliver receives the already-stamped envelope verbatim, so a future replay
-// path cannot restamp received_at even by accident: the stamp was applied at
-// ingress, before this seam ever saw the message.
+// The drain half lives on [QueueDrain]: the server discovers it by interface
+// upgrade on the same wired sink, so production wiring stays one object.
 type OfflineSink interface {
-	Deliver(recipient string, env *walkiev1.Envelope)
+	Deliver(recipient string, env *walkiev1.Envelope) error
+}
+
+// QueueDrain is the read-and-acknowledge half of the offline queue, used by
+// the handshake (handleHello) and the QueueAck dispatch case. It is an
+// OPTIONAL upgrade of the wired OfflineSink: a sink that only holds messages
+// (tests) satisfies OfflineSink alone; internal/coordinator/queue.Queue
+// satisfies both. Discovered by assertion rather than a second constructor
+// parameter so the wiring story stays "one sink, whole contract".
+type QueueDrain interface {
+	// Resume returns queued deliveries with position > after, oldest first,
+	// each envelope position-stamped for the wire.
+	Resume(recipient string, after uint64) ([]queue.Delivery, error)
+	// Ack advances the per-recipient high-water mark (monotonic).
+	Ack(recipient string, position uint64) error
 }
 
 // addRoute registers one live connection under its resolved device name.
@@ -227,15 +246,21 @@ func (s *Server) handleBroadcast(ctx context.Context, out *connWriter, id tsauth
 }
 
 // deliverUnroutable handles a direct message whose recipient has no live
-// connection. Three cases, in priority order:
+// connection. Four cases, in priority order:
 //
 //   - Unknown device (tracker wired, name never seen): ProtocolError
 //     DEVICE_UNKNOWN back to the sender — the schema defines this code for
 //     exactly the typo case, and refusing fast beats silence.
-//   - Known-but-offline, sink wired: hand the STAMPED envelope to the sink.
-//     This is sto:offline-queue's extension point being exercised; the sink
-//     decides retention, this code decides nothing about it.
-//   - Known-but-offline, no sink (today's default): drop with a loud warn.
+//   - Known-but-offline, sink wired, retention accepted: hand the STAMPED
+//     envelope to the sink and log the hold. This is sto:offline-queue's
+//     extension point being exercised; the sink decides retention, this code
+//     decides nothing about it.
+//   - Known-but-offline, sink wired, retention REFUSED (size cap): the
+//     sender is told with QueueRefused{SIZE_CAP} AND the log records it AND
+//     nothing was stored — all three, because req:offline-delivery makes a
+//     refusal that is only half-told worse than none. The connection stays
+//     open: a full inbox is a correctable condition, not a broken peer.
+//   - Known-but-offline, no sink (skeleton default): drop with a loud warn.
 //     Honest absence of a queue, logged content-free; NOT a silent fake.
 //
 // With no tracker wired (skeleton tests), unknown-vs-offline cannot be
@@ -260,16 +285,50 @@ func (s *Server) deliverUnroutable(ctx context.Context, out *connWriter, sender,
 	}
 
 	if s.offline != nil {
-		s.offline.Deliver(recipient, stamped)
-		s.logger.Info("direct message held: recipient offline, handed to offline sink",
-			slog.String("sender", sender),
-			slog.String("recipient", recipient),
-			slog.Int("body_bytes", bodyBytes),
-		)
-		return
+		err := s.offline.Deliver(recipient, stamped)
+		var capErr *queue.CapacityError
+		switch {
+		case errors.As(err, &capErr):
+			// Criterion 6, wire half: the sender hears WHY, in the schema's
+			// own refusal shape. Detail names the bound without quoting any
+			// message content.
+			s.logger.Warn("direct message refused: recipient inbox at size cap",
+				slog.String("sender", sender),
+				slog.String("recipient", recipient),
+				slog.Int("body_bytes", bodyBytes),
+				slog.Int("cap_messages", capErr.Cap),
+			)
+			out.write(ctx, &walkiev1.Envelope{
+				Payload: &walkiev1.Envelope_QueueRefused{QueueRefused: &walkiev1.QueueRefused{
+					Reason: walkiev1.QueueRefusalReason_QUEUE_REFUSAL_REASON_SIZE_CAP,
+					Detail: fmt.Sprintf("message not retained: %s's offline queue is at its size cap (%d messages); retry later",
+						recipient, capErr.Cap),
+				}},
+			})
+			return
+		case err != nil:
+			// Internal failure (storage trouble): NOT the sender's fault, so
+			// it gets no wire blame — an invented error shape here would lie
+			// about who failed. Loud log; the sender's outbox retransmits on
+			// its next reconnect, which at-least-once delivery exists for.
+			s.logger.Error("direct message hold failed",
+				slog.String("sender", sender),
+				slog.String("recipient", recipient),
+				slog.Int("body_bytes", bodyBytes),
+				slog.String("reason", err.Error()),
+			)
+			return
+		default:
+			s.logger.Info("direct message held: recipient offline, handed to offline sink",
+				slog.String("sender", sender),
+				slog.String("recipient", recipient),
+				slog.Int("body_bytes", bodyBytes),
+			)
+			return
+		}
 	}
 
-	// Today's honest default: no queue exists yet. The drop is loud, typed
+	// Skeleton default: no queue exists yet. The drop is loud, typed
 	// (reason class, not prose) and names the owning item so the next reader
 	// knows this is a seam awaiting wiring, not a bug.
 	s.logger.Warn("direct message dropped: recipient offline, no queue wired",

@@ -124,6 +124,13 @@ type presenceRig struct {
 	logs     *bytes.Buffer
 	ln       *pipeListener
 
+	// st and srv are exposed for suites that extend the rig — the offline
+	// queue tests wire a real queue over THIS store (one store per process,
+	// as in production) by assigning srv.offline before any client connects,
+	// when no connection handler exists to race the write.
+	st  *store.Store
+	srv *Server
+
 	nextIP byte
 }
 
@@ -156,14 +163,15 @@ func startPresenceRig(t *testing.T, sink ...OfflineSink) *presenceRig {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	srvDone := make(chan struct{})
+	srv := NewServer(resolver, clk, logger, tr, offline)
 	go func() {
 		defer close(srvDone)
-		if err := NewServer(resolver, clk, logger, tr, offline).Serve(ctx, ln); err != nil {
+		if err := srv.Serve(ctx, ln); err != nil {
 			t.Errorf("Serve: %v", err)
 		}
 	}()
 
-	r := &presenceRig{resolver: resolver, clk: clk, tracker: tr, logs: logs, ln: ln, nextIP: 1}
+	r := &presenceRig{resolver: resolver, clk: clk, tracker: tr, logs: logs, ln: ln, st: st, srv: srv, nextIP: 1}
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -194,15 +202,34 @@ type testClient struct {
 	// model, deliberately kept out of the ordered event stream below.
 	roster []*walkiev1.Envelope
 
+	// helloAck is THIS connection's handshake ack, kept query-only: the
+	// offline-queue tests assert on pending_count without re-plumbing the
+	// handshake loop.
+	helloAck *walkiev1.HelloAck
+
 	// pending holds live events consumed off the wire while a helper was
 	// waiting for something else (a heartbeat's sync ack); nextEnvelope
 	// serves them before reading further, preserving wire order.
 	pending []*walkiev1.Envelope
+
+	// wireLog records EVERY envelope this connection received, regardless of
+	// which helper consumed it. This is sto:offline-queue criterion 4's
+	// instrument: assertions about "what crossed the wire" must be made
+	// against a complete record of the wire, not against whatever a
+	// nextEnvelope-driven helper happened to pull — a full-replay server bug
+	// hides precisely in the frames nobody asked for. Guarded by wireMu
+	// because the reader goroutine appends while test assertions read.
+	wireMu  sync.Mutex
+	wireLog []*walkiev1.Envelope
 }
 
 // connectDevice dials a fresh device named name over a fresh link, stages its
 // tailnet identity, completes Hello/HelloAck, and leaves its reader running.
-func (r *presenceRig) connectDevice(t *testing.T, name string) *testClient {
+//
+// The optional lastAcked becomes Hello.last_acked_position — the offline
+// queue's resume input (sto:offline-queue). Absent, it is zero: "I have
+// nothing yet".
+func (r *presenceRig) connectDevice(t *testing.T, name string, lastAcked ...uint64) *testClient {
 	t.Helper()
 
 	ip := r.nextIP
@@ -262,15 +289,23 @@ func (r *presenceRig) connectDevice(t *testing.T, name string) *testClient {
 			if proto.Unmarshal(data, &env) != nil {
 				return
 			}
+			c.wireMu.Lock()
+			c.wireLog = append(c.wireLog, &env)
+			c.wireMu.Unlock()
 			c.envs <- &env
 		}
 	}()
 
 	// Handshake. Everything before the ack is the roster snapshot.
-	c.send(t, helloEnvelope(walkiev1.MaxProtocolVersion))
+	hello := helloEnvelope(walkiev1.MaxProtocolVersion)
+	if len(lastAcked) > 0 {
+		hello.GetHello().LastAckedPosition = lastAcked[0]
+	}
+	c.send(t, hello)
 	for {
 		env := c.recvRaw(t)
 		if env.GetHelloAck() != nil {
+			c.helloAck = env.GetHelloAck()
 			break
 		}
 		c.roster = append(c.roster, env)
@@ -364,6 +399,26 @@ func (c *testClient) assertSilent(t *testing.T) {
 		t.Fatalf("%s: unexpected envelope %T", c.name, env.GetPayload())
 	default:
 	}
+}
+
+// wireDirectMessages snapshots every DirectMessage envelope this connection
+// has received so far, in wire order — the criterion-4 measurement surface.
+//
+// Callers MUST establish causality first (the Hello-probe/awaitHelloAck idiom:
+// dispatch is sequential in the server's read loop, so the probe's ack proves
+// every earlier server-side write has landed). Without that, a snapshot taken
+// mid-drain would undercount frames still in flight and could pass a
+// full-replay implementation that simply had not finished replaying yet.
+func (c *testClient) wireDirectMessages() []*walkiev1.Envelope {
+	c.wireMu.Lock()
+	defer c.wireMu.Unlock()
+	var out []*walkiev1.Envelope
+	for _, env := range c.wireLog {
+		if env.GetDirectMessage() != nil {
+			out = append(out, env)
+		}
+	}
+	return out
 }
 
 // teardown closes the connection politely. Killed connections override this

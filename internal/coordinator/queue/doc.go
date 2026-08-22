@@ -33,6 +33,15 @@
 //
 // Payloads resting here are outside the WireGuard tunnel's protection, which is
 // exactly why adr:004-security-model puts them in scope for the sealed box. This
-// package stores ciphertext; see internal/crypto and ts:queue-sealed-box. A test
-// should read the stored bytes directly and assert they are not plaintext.
+// package will store ciphertext once ts:queue-sealed-box lands; see
+// internal/crypto. At that point a test should read the stored bytes directly
+// and assert they are not plaintext.
+//
+// State under sto:offline-queue (this item): bodies are stored OPAQUE — the
+// queue marshals the stamped envelope verbatim into one BLOB and never opens
+// it on any path other than replay, and nothing indexes or searches on
+// content. The bytes are still PLAINTEXT until ts:queue-sealed-box lands;
+// that item swaps ciphertext for plaintext at exactly the two boundary points
+// this shape provides (marshal-before-store, unmarshal-after-load) without
+// touching this logic or the schema.
 package queue
