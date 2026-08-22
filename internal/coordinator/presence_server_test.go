@@ -127,7 +127,10 @@ type presenceRig struct {
 	nextIP byte
 }
 
-func startPresenceRig(t *testing.T) *presenceRig {
+// startPresenceRig runs one coordinator under test. The optional variadic
+// sink wires sto:text-messaging's OfflineSink extension point (routing_test.go
+// exercises it); absent, the server runs with nil — today's production shape.
+func startPresenceRig(t *testing.T, sink ...OfflineSink) *presenceRig {
 	t.Helper()
 
 	clk := clock.NewFake(rigEpoch)
@@ -146,11 +149,16 @@ func startPresenceRig(t *testing.T) *presenceRig {
 	ln := newPipeListener()
 	resolver := tsauth.NewStaticResolver(nil)
 
+	var offline OfflineSink
+	if len(sink) > 0 {
+		offline = sink[0]
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	srvDone := make(chan struct{})
 	go func() {
 		defer close(srvDone)
-		if err := NewServer(resolver, clk, logger, tr).Serve(ctx, ln); err != nil {
+		if err := NewServer(resolver, clk, logger, tr, offline).Serve(ctx, ln); err != nil {
 			t.Errorf("Serve: %v", err)
 		}
 	}()

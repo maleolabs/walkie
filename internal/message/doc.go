@@ -22,6 +22,51 @@
 // explicitly: a total order across the tailnet is not provided and must not be
 // assumed by anything built on this package.
 //
+// # The no-global-order warning, stated loudly because it keeps being needed
+//
+// This implementation may INCIDENTALLY exhibit something that looks like a
+// global order: there is one coordinator today, envelopes cross it in arrival
+// order, and each client's socket delivers in wire order. That emergent
+// sequence is an artefact of the current deployment shape, NOT a contract.
+// Nothing here computes, exposes or promises one — no sequence numbers, no
+// global clock, no "happened-before across conversations" API — and NOTHING
+// built on this package may depend on such an order existing. The phase-2
+// direct data plane removes the single choke point that currently produces
+// the illusion; code that quietly leaned on it would break then, invisibly.
+// Per-conversation ordering ([Log], [ConversationKey]) is the whole offer.
+//
+// # Where deduplication sits
+//
+// At the display decision, not at the socket. Criterion 3 is about the
+// displayed result — the same ULID delivered twice must produce ONE displayed
+// message — so the filter lives in [Log.Append], the single gate every
+// displayed message passes, and [Dedup] is the bounded mechanism underneath.
+// A check at socket-read alone does not satisfy the criterion: duplicates can
+// enter through reconnect replay today and queue drain tomorrow, and every
+// path to the screen must meet the same verdict.
+//
+// # ULIDs are convenient, not authoritative
+//
+// ULIDs are lexicographically sortable by time. That is a debugging and
+// display convenience — same-millisecond IDs from one process sort in
+// generation order ([NewID] uses monotonic entropy for exactly this) — and it
+// is NOT a substitute for the two timestamps. Sorting by ID silently trusts
+// the sender's clock twice over (ULID time comes from it) and hides skew
+// instead of surfacing it; req:text-messaging wants skew legible, which is
+// why [Message] carries SentAt and ReceivedAt as first-class fields and why
+// nothing here orders by ID.
+//
+// # Retention is bounded everywhere it appears here
+//
+// The dedup window and the per-conversation scrollback are both capped, with
+// their tradeoffs documented on their types. Neither is durable retention:
+// persistence belongs to sto:message-history, which will take its messages
+// through the [Message] shape and the [Log.Append] gate this package already
+// defines — a clean seam, deliberately left without a half-built store behind
+// it. Rendering belongs to sto:terminal-ui, which consumes Conversation
+// snapshots plus Append's return value; headless clients and the control
+// socket use the same two primitives.
+//
 // # Timestamps
 //
 // Retain both the sender's send time and the coordinator's receive time. Clock
