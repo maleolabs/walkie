@@ -93,6 +93,81 @@ var migrations = []migration{
 )`,
 		},
 	},
+	{
+		version: 2,
+		name:    "create-offline-queue-tables",
+		// sto:offline-queue. Two tables, split the same way the queue's own
+		// package splits its concerns:
+		//
+		//   - queue_inbox holds RETAINED MESSAGES. The body column is
+		//     deliberately OPAQUE bytes and must stay that way: it holds the
+		//     stamped envelope verbatim today (plaintext) and will hold its
+		//     sealed-box ciphertext once ts:queue-sealed-box lands — a swap
+		//     of column CONTENT, never of schema. Nothing indexes or searches
+		//     on it; the only keys are recipient and position. adr:004 puts
+		//     these resting payloads in scope for application encryption
+		//     precisely because they sit outside the WireGuard tunnel.
+		//
+		//   - queue_cursor holds per-recipient DELIVERY STATE: next_position
+		//     (the monotonic counter — persisted, not derived from MAX(row),
+		//     so positions never restart after a full drain or TTL eviction,
+		//     which would silently hide new messages behind an old acked
+		//     position) and acked_position (the high-water mark QueueAck
+		//     advances). Both surviving restart is sto:offline-queue's point:
+		//     queued messages and acknowledged positions outlive the process.
+		//
+		// Timestamps are UTC with a FIXED 9-digit fraction. Why not
+		// RFC3339Nano like migration 1: Nano trims trailing zeros, and a
+		// trailing-zero-less "…00Z" sorts lexicographically AFTER
+		// "…00.5Z" — string comparison would mis-order rows. The queue is
+		// the first table that must compare timestamps in SQL (TTL expiry),
+		// so it needs a layout where lexicographic order IS chronological
+		// order. Zero-padded fixed width gives exactly that.
+		stmts: []string{
+			`CREATE TABLE queue_inbox (
+	recipient   TEXT    NOT NULL,
+	position    INTEGER NOT NULL,
+	message_id  TEXT    NOT NULL,
+	body        BLOB    NOT NULL,
+	enqueued_at TEXT    NOT NULL,
+	PRIMARY KEY (recipient, position)
+)`,
+			`CREATE TABLE queue_cursor (
+	recipient      TEXT PRIMARY KEY,
+	next_position  INTEGER NOT NULL,
+	acked_position INTEGER NOT NULL
+)`,
+		},
+	},
+	{
+		version: 3,
+		name:    "create-outbox-table",
+		// sto:offline-queue, client half. The outbox holds messages composed
+		// while disconnected until a reconnect transmits them
+		// (req:offline-delivery criterion 3). Same opaqueness rule as
+		// queue_inbox: envelope BLOB stores the marshaled envelope verbatim;
+		// message_id is identity metadata for removal, not content.
+		//
+		// seq is an AUTOINCREMENT rowid because FIFO order IS the contract:
+		// the outbox drains in composition order, and plain rowid reuse after
+		// deletes could reorder survivors. AUTOINCREMENT forbids reuse, so
+		// order survives any pattern of insert-and-remove.
+		//
+		// This table lives in the shared embedded sequence, so a coordinator
+		// database carries it unused and vice versa — the known cost of one
+		// migration sequence for one codebase; see the migrations comment
+		// above. Plaintext local storage is the accepted posture here: local
+		// history encryption is a recorded gap with no phase, and file
+		// permissions stay restrictive via store.Open either way.
+		stmts: []string{
+			`CREATE TABLE outbox_message (
+	seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+	message_id TEXT    NOT NULL UNIQUE,
+	envelope   BLOB    NOT NULL,
+	queued_at  TEXT    NOT NULL
+)`,
+		},
+	},
 }
 
 // migrate brings the database from its recorded version up to len-aware
