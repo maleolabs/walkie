@@ -17,6 +17,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/maleolabs/walkie/internal/clock"
+	"github.com/maleolabs/walkie/internal/coordinator/presence"
 	"github.com/maleolabs/walkie/internal/coordinator/tsauth"
 	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
 )
@@ -97,6 +98,20 @@ type Server struct {
 	logger   *slog.Logger
 	clk      clock.Clock
 
+	// presence is the server-authoritative liveness tracker (sto:device-presence).
+	// It is wired, not bypassed: every input to it is an event THIS process
+	// witnesses — a connection completing the identity gate below, an
+	// application-level Heartbeat arriving on dispatch, or a connection
+	// handler exiting. There is deliberately no envelope in the schema and no
+	// branch in dispatch through which a client could assert its own online
+	// state (req:device-presence criterion 5); if you are about to add one,
+	// stop and re-read the Tracker's type comment first.
+	//
+	// A nil tracker disables presence entirely: the skeleton's original
+	// behaviour, still used by tests that exercise non-presence machinery.
+	// Production wiring (cmd/walkie-coordinator) always passes a real one.
+	presence *presence.Tracker
+
 	// conns tracks every live WebSocket with its per-connection cancel func
 	// so shutdown can close them all and, only as a last resort, abort the
 	// stragglers. Guarded by connsMu; entries are added after Accept and
@@ -122,7 +137,12 @@ type Server struct {
 // its clock from clk. A nil logger falls back to slog's default: the skeleton
 // must never be silently unlogged, because criterion 2's refusal evidence IS a
 // log line.
-func NewServer(resolver tsauth.Resolver, clk clock.Clock, logger *slog.Logger) *Server {
+//
+// tracker wires server-authoritative presence (sto:device-presence). Nil
+// disables it — the pre-presence skeleton shape, kept for tests that exercise
+// other machinery — but every production binary passes a real Tracker backed
+// by the store, so liveness facts survive a coordinator restart.
+func NewServer(resolver tsauth.Resolver, clk clock.Clock, logger *slog.Logger, tracker *presence.Tracker) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -130,6 +150,7 @@ func NewServer(resolver tsauth.Resolver, clk clock.Clock, logger *slog.Logger) *
 		resolver: resolver,
 		logger:   logger,
 		clk:      clk,
+		presence: tracker,
 		conns:    make(map[*websocket.Conn]context.CancelFunc),
 	}
 }
@@ -407,7 +428,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		go ws.Close(code, "")
 	}()
 
-	s.serveConn(ctx, ws, id)
+	s.serveConn(ctx, ws, &connWriter{ws: ws, logger: s.logger}, id)
 }
 
 // serveConn reads protobuf Envelopes from one authenticated connection until
@@ -417,11 +438,53 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // construction, and this package must do nothing to opt out — the fleet runs
 // mixed versions and adr:003-wire-protocol forbids lockstep upgrades. A test
 // pins this at the server level (server_test.go), not just at the codec.
-func (s *Server) serveConn(ctx context.Context, ws *websocket.Conn, id tsauth.Identity) {
+//
+// # Presence lifecycle (sto:device-presence)
+//
+// When a tracker is wired, this function brackets the connection's whole
+// lifetime — every exit path, including drain and shutdown aborts — with
+// exactly one ConnectionEstablished / ConnectionLost pair:
+//
+//   - Established runs BEFORE any protocol traffic. The identity gate above
+//     already proved who the peer is; a live WebSocket to a proven identity is
+//     first-hand evidence of life, so criterion 1 ("a connecting device
+//     appears online") applies at accept time, not at Hello time. A client
+//     that connects and dies before Hello therefore still flickers online→
+//     offline honestly rather than being invisible for its whole short life.
+//   - Lost runs from a defer, so clean closes, read errors, version-gate
+//     refusals, size-cap refusals, panics and shutdown aborts all record the
+//     loss exactly once. The tracker's refcount absorbs reconnect overlap,
+//     where the new handler's Establish lands before the old handler's Loss.
+func (s *Server) serveConn(ctx context.Context, ws *websocket.Conn, out *connWriter, id tsauth.Identity) {
 	// Removed on exit so the shutdown registry only ever lists connections
 	// whose read loop is actually still running; the paired WaitGroup Done
 	// is what lets Serve's drain wait finish.
 	defer s.release(ws)
+
+	device := deviceOf(id)
+
+	if s.presence != nil {
+		s.presence.ConnectionEstablished(device)
+
+		// Subscribe BEFORE snapshotting the roster (view.go documents why
+		// this order cannot miss an event; duplicates it can produce are
+		// harmless because PresenceUpdates are idempotent statements of
+		// current state). The pump goroutine forwards changes to THIS
+		// connection for as long as it lives; sub.Close below both stops it
+		// and makes its exit prompt on every path out of this function.
+		sub := s.presence.Subscribe()
+		defer sub.Close()
+		go s.pumpPresence(ctx, out, sub, device)
+
+		// The new connection gets the full roster once, itself included —
+		// a roster needs its own line, and a point-in-time read model is
+		// not the event stream the subject-exclusion rule governs.
+		for _, e := range s.presence.Snapshot() {
+			out.write(ctx, presenceUpdateEnvelope(e))
+		}
+
+		defer s.presence.ConnectionLost(device)
+	}
 
 	for {
 		typ, frame, err := ws.Reader(ctx)
@@ -474,7 +537,7 @@ func (s *Server) serveConn(ctx context.Context, ws *websocket.Conn, id tsauth.Id
 				slog.String("node_name", id.NodeName),
 				slog.String("reason", err.Error()),
 			)
-			s.reply(ctx, ws, &walkiev1.Envelope{
+			out.write(ctx, &walkiev1.Envelope{
 				Payload: &walkiev1.Envelope_ProtocolError{
 					ProtocolError: &walkiev1.ProtocolError{
 						Code:   walkiev1.ProtocolErrorCode_PROTOCOL_ERROR_CODE_MALFORMED,
@@ -485,7 +548,7 @@ func (s *Server) serveConn(ctx context.Context, ws *websocket.Conn, id tsauth.Id
 			continue
 		}
 
-		if !s.dispatch(ctx, ws, id, &env) {
+		if !s.dispatch(ctx, out, id, &env) {
 			return
 		}
 	}
@@ -494,26 +557,90 @@ func (s *Server) serveConn(ctx context.Context, ws *websocket.Conn, id tsauth.Id
 // dispatch handles one decoded envelope. It reports false when the connection
 // must close (version-gate refusal), true otherwise.
 //
-// This switch is the skeleton's deliberate minimum. Presence updates belong to
-// sto:device-presence, queue drain to sto:offline-queue, key distribution to
-// ts:queue-sealed-box: each lands here as its own case with its owning item's
-// tests. Everything unrecognized is logged-and-ignored — NEVER rejected —
-// because ignoring unknown payloads is exactly how an older coordinator
-// survives a newer client (adr:003 mixed-fleet rule).
-func (s *Server) dispatch(ctx context.Context, ws *websocket.Conn, id tsauth.Identity, env *walkiev1.Envelope) bool {
+// This switch is the skeleton's deliberate minimum. Queue drain belongs to
+// sto:offline-queue, key distribution to ts:queue-sealed-box: each lands here
+// as its own case with its owning item's tests. Everything unrecognized is
+// logged-and-ignored — NEVER rejected — because ignoring unknown payloads is
+// exactly how an older coordinator survives a newer client (adr:003
+// mixed-fleet rule).
+//
+// # Criterion 5, verified at the only place new client input enters
+//
+// The presence cases below are the complete set of client-originated inputs to
+// liveness, and neither asserts anything:
+//
+//   - Heartbeat carries no fields at all. Its arrival is OBSERVED evidence of
+//     life — the fact is that bytes came from the peer's socket, not anything
+//     the peer claimed. ObserveHeartbeat records the observation; it accepts
+//     no state.
+//   - PresenceStatusChange carries a status LABEL and nothing else (the proto
+//     field doc forbids folding an online flag into it). SetStatus stores the
+//     label; it cannot move liveness in either direction.
+//
+// There is no "I am online" envelope in walkie.v1 and none may be added here:
+// the tracker's API makes such an assertion unrepresentable, and this switch
+// must never grow a case that routes one. req:device-presence criterion 5.
+func (s *Server) dispatch(ctx context.Context, out *connWriter, id tsauth.Identity, env *walkiev1.Envelope) bool {
 	switch payload := env.GetPayload().(type) {
 	case *walkiev1.Envelope_Hello:
-		return s.handleHello(ctx, ws, id, payload.Hello)
+		return s.handleHello(ctx, out, id, payload.Hello)
+
+	case *walkiev1.Envelope_Heartbeat:
+		if s.presence != nil {
+			s.presence.ObserveHeartbeat(deviceOf(id))
+		}
+		return true
+
+	case *walkiev1.Envelope_PresenceStatusChange:
+		return s.handleStatusChange(ctx, out, id, payload.PresenceStatusChange)
+
 	default:
 		// Structured, content-free: the payload TYPE name is protocol
 		// metadata, safe to log; message_id identifies without disclosing.
-		s.logger.Debug("payload ignored: no handler in skeleton",
+		s.logger.Debug("payload ignored: no handler",
 			slog.String("node_name", id.NodeName),
 			slog.String("payload_type", fmt.Sprintf("%T", env.GetPayload())),
 			slog.String("message_id", env.GetMessageId()),
 		)
 		return true
 	}
+}
+
+// handleStatusChange applies a client's own custom status label.
+//
+// The tracker enforces the receiver-side bound from ts:protocol-schema-v1
+// (256 bytes of UTF-8) and REJECTS rather than truncates — truncation would
+// silently publish something the user did not write. The rejection travels
+// back as a ProtocolError so the client can push back on its user instead of
+// believing the status took. MALFORMED is the closest code the schema offers
+// for "your frame violated a receiver-enforced rule"; the detail names the
+// actual rule. The connection stays open either way: a rejected status is a
+// correctable mistake, not a broken peer.
+//
+// Success answers with nothing on THIS connection — the setter applied its
+// own status locally, and the change reaches everyone else as a PresenceUpdate
+// broadcast. An ack would be a third copy of information both ends already
+// hold.
+func (s *Server) handleStatusChange(ctx context.Context, out *connWriter, id tsauth.Identity, ch *walkiev1.PresenceStatusChange) bool {
+	if s.presence == nil {
+		return true // presence disabled: nothing to apply, nothing to reject
+	}
+	if err := s.presence.SetStatus(deviceOf(id), ch.GetStatus()); err != nil {
+		s.logger.Warn("status change rejected",
+			slog.String("node_name", id.NodeName),
+			slog.Int("len_bytes", len(ch.GetStatus())),
+			slog.String("reason", err.Error()),
+		)
+		out.write(ctx, &walkiev1.Envelope{
+			Payload: &walkiev1.Envelope_ProtocolError{
+				ProtocolError: &walkiev1.ProtocolError{
+					Code:   walkiev1.ProtocolErrorCode_PROTOCOL_ERROR_CODE_MALFORMED,
+					Detail: "presence_status_change.status rejected: " + err.Error(),
+				},
+			},
+		})
+	}
+	return true
 }
 
 // handleHello answers the handshake.
@@ -523,9 +650,9 @@ func (s *Server) dispatch(ctx context.Context, ws *websocket.Conn, id tsauth.Ide
 // so both ends cannot disagree about compatibility). An out-of-range peer gets
 // the structured ProtocolError naming both versions, then the connection
 // closes — there is nothing further two incompatible endpoints can say.
-func (s *Server) handleHello(ctx context.Context, ws *websocket.Conn, id tsauth.Identity, hello *walkiev1.Hello) bool {
+func (s *Server) handleHello(ctx context.Context, out *connWriter, id tsauth.Identity, hello *walkiev1.Hello) bool {
 	if !walkiev1.ProtocolVersionSupported(hello.GetProtocolVersion()) {
-		s.reply(ctx, ws, &walkiev1.Envelope{
+		out.write(ctx, &walkiev1.Envelope{
 			Payload: &walkiev1.Envelope_ProtocolError{
 				ProtocolError: walkiev1.NewVersionUnsupportedError(hello.GetProtocolVersion()),
 			},
@@ -534,14 +661,15 @@ func (s *Server) handleHello(ctx context.Context, ws *websocket.Conn, id tsauth.
 			slog.String("node_name", id.NodeName),
 			slog.Uint64("peer_version", uint64(hello.GetProtocolVersion())),
 		)
-		ws.Close(websocket.StatusUnsupportedData, "unsupported protocol version")
+		out.ws.Close(websocket.StatusUnsupportedData, "unsupported protocol version")
 		return false
 	}
 
 	// Device echoes the RESOLVED identity back: the client learns who the
 	// tailnet says it is, it does not assert one (Hello.device field doc).
 	// NodeName is the device identifier; LoginName is the fallback for
-	// daemons that answered WhoIs without a node record.
+	// daemons that answered WhoIs without a node record. The same rule names
+	// the device everywhere else presence is concerned — see deviceOf.
 	device := id.NodeName
 	if device == "" {
 		device = id.LoginName
@@ -551,7 +679,7 @@ func (s *Server) handleHello(ctx context.Context, ws *websocket.Conn, id tsauth.
 	// sto:offline-queue, which will replace this constant when it lands.
 	// received_at comes from the injected clock — every timestamp this
 	// process writes must be fakeable under test (ts:test-harness).
-	s.reply(ctx, ws, &walkiev1.Envelope{
+	out.write(ctx, &walkiev1.Envelope{
 		Payload: &walkiev1.Envelope_HelloAck{
 			HelloAck: &walkiev1.HelloAck{
 				Device:          device,
@@ -562,30 +690,6 @@ func (s *Server) handleHello(ctx context.Context, ws *websocket.Conn, id tsauth.
 		},
 	})
 	return true
-}
-
-// reply writes one envelope as a binary frame.
-//
-// The write is bounded by ctx, not context.Background(): a reply to a stuck
-// peer must die with the connection's lifetime, or shutdown would block
-// forever inside this write while the grace window expires around it.
-//
-// Coordinator-originated envelopes leave message_id empty on purpose: dedup
-// by ULID exists for REDELIVERED traffic (req:offline-delivery), whose policy
-// belongs to sto:offline-queue. Inventing an ID scheme here would pre-empt
-// that design; request-reply correlation on this connection needs none.
-func (s *Server) reply(ctx context.Context, ws *websocket.Conn, env *walkiev1.Envelope) {
-	data, err := proto.Marshal(env)
-	if err != nil {
-		// Marshal failure on a structurally valid reply is a programmer
-		// error; log and let the read loop's next iteration surface the
-		// dead connection.
-		s.logger.Error("reply marshal failed", slog.String("reason", err.Error()))
-		return
-	}
-	if err := ws.Write(ctx, websocket.MessageBinary, data); err != nil {
-		s.logger.Warn("reply write failed", slog.String("reason", err.Error()))
-	}
 }
 
 // isNormalClose reports whether err is just the connection ending: the peer's

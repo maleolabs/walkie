@@ -58,7 +58,42 @@ type migration struct {
 // versions must stay contiguous from 1, and a database whose recorded version
 // is beyond the sequence's end (a step was deleted or renumbered) refuses to
 // open rather than guess.
-var migrations = []migration{}
+var migrations = []migration{
+	{
+		version: 1,
+		name:    "create-presence-tables",
+		// sto:device-presence. Two tables because presence is two kinds of
+		// thing and the schema should teach that to the next reader:
+		//
+		//   - presence_liveness holds SERVER-DERIVED FACTS only — when a
+		//     device was last observed alive. There is deliberately NO
+		//     "online" column anywhere: online state lives only in the
+		//     tracker's memory, so a coordinator restart cannot resurrect a
+		//     stale "online" row — not by careful code, but because the
+		//     database cannot represent it. Nobody is online until they are
+		//     observed alive again.
+		//
+		//   - presence_status holds USER-AUTHORED LABELS only — the custom
+		//     status message, which req:device-presence requires to survive
+		//     the setting device's reconnect (and a coordinator restart).
+		//
+		// No foreign key between them on purpose: a device may have a status
+		// before its first heartbeat, and liveness rows outlive status
+		// clears. Timestamps are RFC3339Nano UTC strings from the injected
+		// clock, matching schema_migrations.applied_at.
+		stmts: []string{
+			`CREATE TABLE presence_liveness (
+	device    TEXT PRIMARY KEY,
+	last_seen TEXT NOT NULL
+)`,
+			`CREATE TABLE presence_status (
+	device     TEXT PRIMARY KEY,
+	status     TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`,
+		},
+	},
+}
 
 // migrate brings the database from its recorded version up to len-aware
 // current, using the embedded sequence. Called by Open.

@@ -27,6 +27,7 @@
 //	WALKIE_STORE_PATH       SQLite database path
 //	                        (default "<WALKIE_STATE_DIR>/coordinator.db")
 //	WALKIE_CONTROL_PORT     control-plane port (default "443")
+//	WALKIE_PRESENCE_TTL     liveness TTL for presence (default "45s")
 //
 // The auth key arrives via environment rather than flag deliberately: argv is
 // world-readable through ps and shell history, and this process has no other
@@ -45,17 +46,23 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 
 	tsnet "tailscale.com/tsnet"
 
 	"github.com/maleolabs/walkie/internal/clock"
 	"github.com/maleolabs/walkie/internal/coordinator"
+	"github.com/maleolabs/walkie/internal/coordinator/presence"
 	"github.com/maleolabs/walkie/internal/coordinator/tsauth"
 	"github.com/maleolabs/walkie/internal/store"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
 var version = "dev"
+
+// defaultPresenceTTL backs WALKIE_PRESENCE_TTL; see loadConfig for the
+// reasoning and why it is provisional.
+const defaultPresenceTTL = 45 * time.Second
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version, then exit")
@@ -94,6 +101,18 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("open store %s: %w", cfg.storePath, err)
 	}
 	defer st.Close()
+
+	// Presence (sto:device-presence): the tracker derives liveness from what
+	// the coordinator observes — connections, heartbeats, their endings, and
+	// the TTL. It is backed by the same store, so last-seen facts and status
+	// labels survive a restart while nothing online does: after startup every
+	// device is offline until observed alive again. Registered AFTER the
+	// store's defer so Close order runs tracker-then-store.
+	tracker, err := presence.NewTracker(st, clock.Real(), cfg.presenceTTL, logger)
+	if err != nil {
+		return fmt.Errorf("start presence tracker: %w", err)
+	}
+	defer tracker.Close()
 
 	// Criterion 1, production path: this process IS a tailnet node. tsnet
 	// brings its own WireGuard, DERP fallback and node identity inside the
@@ -138,7 +157,7 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	coord := coordinator.NewServer(resolver, clock.Real(), logger)
+	coord := coordinator.NewServer(resolver, clock.Real(), logger, tracker)
 	if err := coord.Serve(ctx, ln); err != nil {
 		// The drain can genuinely fail: a peer that ignores close frames
 		// outlives the grace window. Saying "shutdown complete" then would
@@ -165,6 +184,7 @@ type config struct {
 	stateDir    string
 	storePath   string
 	controlPort string
+	presenceTTL time.Duration
 }
 
 // loadConfig reads the environment into [config].
@@ -191,12 +211,28 @@ func loadConfig() (*config, error) {
 		port = "443"
 	}
 
+	// The liveness TTL: how long a silent device stays online after its last
+	// observed heartbeat. 45s is a provisional default — generous against
+	// jittery tailnet links, tight enough that criterion 3's "offline within
+	// the TTL" stays honest for humans watching a roster. The heartbeat
+	// cadence it must relate to lands with the client work items; revisit
+	// then rather than tuning blind.
+	ttl := defaultPresenceTTL
+	if v := os.Getenv("WALKIE_PRESENCE_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("parse WALKIE_PRESENCE_TTL %q: %w", v, err)
+		}
+		ttl = d
+	}
+
 	return &config{
 		authKey:     os.Getenv("WALKIE_TAILNET_AUTHKEY"),
 		hostname:    envOr("WALKIE_HOSTNAME", "walkie-coordinator"),
 		stateDir:    stateDir,
 		storePath:   storePath,
 		controlPort: port,
+		presenceTTL: ttl,
 	}, nil
 }
 
