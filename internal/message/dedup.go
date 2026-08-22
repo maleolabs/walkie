@@ -7,7 +7,7 @@ import (
 
 // DefaultDedupWindow is the dedup window a [Log] uses when none is given.
 //
-// Why this number: it must comfortably exceed any plausible REDLIVERY burst —
+// Why this number: it must comfortably exceed any plausible redelivery burst —
 // transport retries and reconnect replays re-deliver messages sent seconds to
 // minutes earlier, interleaved with at most a handful of newer ones. 4096
 // distinct recent IDs covers days of human-scale chat (arc:system-overview's
