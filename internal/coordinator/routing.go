@@ -19,9 +19,13 @@ import (
 //
 //   - A direct message reaches exactly its named recipient's live connection;
 //     a broadcast reaches every OTHER connected device, never the sender.
-//   - Sender identity comes from the connection's resolved tailnet identity
-//     (adr:004's WhoIs gate), never from any payload field — there is no
-//     sender field on the wire to distrust, and none may be added client-side.
+//   - Sender attribution is server-authoritative: the routed payload's sender
+//     field (added additively under sto:text-messaging) is filled here from
+//     the connection's resolved tailnet identity (adr:004's WhoIs gate), and
+//     any value the client put there is discarded — the outbound message is
+//     built field-by-field from validated inputs plus the resolved identity,
+//     so a forged sender cannot survive transit. Same trust posture as
+//     presence: clients learn who they are, they never assert it.
 //   - received_at is stamped ONCE here, at ingress, from the injected clock,
 //     and never rewritten on any later path (the schema pins this; queue
 //     replay must still say when the coordinator FIRST received a message).
@@ -147,8 +151,17 @@ func (s *Server) handleDirect(ctx context.Context, out *connWriter, id tsauth.Id
 		return true
 	}
 
+	// The routed payload is built field-by-field rather than reusing dm: the
+	// sender field comes from the RESOLVED identity, never from the inbound
+	// payload. A client that sets DirectMessage.sender has that value simply
+	// never read — overwritten is indistinguishable from ignored here, and
+	// building fresh makes "the forged value entered nothing" structural.
 	stamped := stampedDelivery(s.clk.Now(), env, &walkiev1.Envelope{
-		Payload: &walkiev1.Envelope_DirectMessage{DirectMessage: dm},
+		Payload: &walkiev1.Envelope_DirectMessage{DirectMessage: &walkiev1.DirectMessage{
+			Recipient: dm.GetRecipient(),
+			Body:      dm.GetBody(),
+			Sender:    sender,
+		}},
 	})
 
 	targets := s.routeTargets(dm.GetRecipient())
@@ -192,8 +205,13 @@ func (s *Server) handleBroadcast(ctx context.Context, out *connWriter, id tsauth
 		return true
 	}
 
+	// Sender filled from the resolved identity, inbound value unread — same
+	// field-by-field construction as handleDirect above.
 	stamped := stampedDelivery(s.clk.Now(), env, &walkiev1.Envelope{
-		Payload: &walkiev1.Envelope_BroadcastMessage{BroadcastMessage: bm},
+		Payload: &walkiev1.Envelope_BroadcastMessage{BroadcastMessage: &walkiev1.BroadcastMessage{
+			Body:   bm.GetBody(),
+			Sender: sender,
+		}},
 	})
 
 	targets := s.routeTargetsExcept(sender)
