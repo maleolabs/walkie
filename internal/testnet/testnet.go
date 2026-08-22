@@ -36,6 +36,12 @@
 // Link keeps its exact semantics — the MVP control plane runs on it, and no
 // loss knob was bolted onto it to satisfy the criterion.
 //
+// The third piece is [Fleet] (fleet.go): twenty client-shaped endpoints
+// against one server-shaped endpoint on one shared *clock.Fake, with an exact
+// quiescence driver — the deployment-upper-bound simulation that
+// ts:test-harness criterion 5 requires and ts:reconnect-resume's
+// thundering-herd test calls for.
+//
 // Two simplifications worth knowing:
 //
 //   - A partition surfaces as [ErrPartitioned] rather than as silence followed
