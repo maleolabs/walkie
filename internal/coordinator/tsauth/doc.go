@@ -28,5 +28,8 @@
 //
 // The import path for the Tailscale local client has moved between releases.
 // Verify the current one against the version pinned in go.mod rather than
-// copying an older example.
+// copying an older example. Verified for tailscale.com v1.94.2: the client is
+// tailscale.com/client/local (WhoIs, ErrPeerNotFound), the response type is
+// tailscale.com/client/tailscale/apitype.WhoIsResponse, and a tsnet.Server
+// exposes its client via (*tsnet.Server).LocalClient().
 package tsauth
