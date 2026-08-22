@@ -3,6 +3,7 @@ module github.com/maleolabs/walkie
 go 1.25.12
 
 require (
+	github.com/coder/websocket v1.8.12
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.57.0
 	tailscale.com v1.94.2
@@ -49,7 +50,6 @@ require (
 	github.com/bufbuild/protoplugin v0.0.0-20260414125817-25d1d281b46b // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cli/browser v1.3.0 // indirect
-	github.com/coder/websocket v1.8.12 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
