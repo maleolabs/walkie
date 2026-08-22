@@ -6,16 +6,24 @@
 # `make proto-check` regenerates and fails on any diff, which is what keeps the
 # committed output honest.
 #
-# TODO(ts:protocol-schema-v1): pin the plugin to an exact version.
-# An unpinned remote plugin resolves to whatever is current, so two people can
-# generate different bytes from the same .proto — which defeats the
-# reproducibility acceptance criterion on this work item and would show up as
-# spurious `make proto-check` failures. A version was deliberately not invented
-# here rather than guessed; pin it once you have run buf and seen what resolves.
+# The generator is pinned to protoc-gen-go v1.36.12 — the exact version of
+# google.golang.org/protobuf this module already requires — and is run as
+# `go tool protoc-gen-go`, so go.mod and go.sum are the only place that records
+# which generator produced the committed output. Pinning matters for two
+# distinct failure modes. An unpinned remote plugin resolves to whatever is
+# current, so two people generate different bytes from the same .proto, which
+# defeats the reproducibility acceptance criterion on this work item and surfaces
+# as a spurious `make proto-check` diff. And a generator whose version drifts
+# away from the protobuf runtime in go.mod can emit code that runtime refuses at
+# init. Bump the plugin and the google.golang.org/protobuf require together.
 version: v2
 
 plugins:
-  - remote: buf.build/protocolbuffers/go
+  # Deliberately `local` rather than `remote:`. The version is then whatever
+  # go.sum says, verified by checksum, and generation needs no network and no
+  # Buf Schema Registry account — so `make proto-check` in CI cannot fail
+  # because of a rate-limited anonymous remote-plugin call.
+  - local: [go, tool, protoc-gen-go]
     out: internal/genproto
     opt:
       - paths=source_relative

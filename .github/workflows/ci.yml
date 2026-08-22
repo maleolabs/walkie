@@ -95,15 +95,38 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # buf is pinned as a Go tool dependency in go.mod, which is what makes
+      # `make proto` reproducible: every developer runs the same version with no
+      # separately installed binary. It has one real cost — buf is a large program
+      # and building it from source takes minutes on a cold Go build cache, which
+      # is the normal state of a CI runner. So this job keeps buf-setup-action to
+      # fetch a prebuilt binary of the SAME version, and overrides the Makefile's
+      # BUF to use it.
+      #
+      # The version is read out of go.mod rather than written here a second time.
+      # Two hand-maintained version numbers drift, and the drift would surface as
+      # a `make proto-check` diff that looks like a schema change and is not one —
+      # exactly the failure the pin exists to prevent.
+      - name: Resolve the pinned buf version from go.mod
+        id: buf
+        run: echo "version=$(go list -m -f '{{.Version}}' github.com/bufbuild/buf | sed 's/^v//')" >> "$GITHUB_OUTPUT"
+
       - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: ${{ steps.buf.outputs.version }}
+          # Without a token the action's release lookup is rate limited per runner
+          # IP, which fails this job for reasons unrelated to the schema.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Lint schema
         run: buf lint
 
       # Committed generated code must match proto/. This is what lets the repo
-      # be built with no codegen toolchain while staying trustworthy.
+      # be built with no codegen toolchain while staying trustworthy. BUF=buf is
+      # the prebuilt binary resolved above; the codegen plugin still comes from
+      # go.mod, so no Buf Schema Registry call happens here.
       - name: Generated code is in sync
-        run: make proto-check
+        run: make proto-check BUF=buf
 
       # adr:003-wire-protocol: the fleet runs mixed client versions, so a
       # renumbered or reused field number is a runtime break with no
