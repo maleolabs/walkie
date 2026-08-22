@@ -4,6 +4,7 @@ go 1.25.12
 
 require (
 	github.com/coder/websocket v1.8.12
+	github.com/oklog/ulid/v2 v2.1.2
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.57.0
 	tailscale.com v1.94.2
