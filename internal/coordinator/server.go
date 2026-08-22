@@ -112,6 +112,20 @@ type Server struct {
 	// Production wiring (cmd/walkie-coordinator) always passes a real one.
 	presence *presence.Tracker
 
+	// offline is sto:offline-queue's extension point (see routing.go): where
+	// messages for devices with no live connection go. Nil — today's
+	// production shape — means unroutable messages are dropped with a loud
+	// log line instead of being retained by anything pretending to be a
+	// queue. The queue item replaces this nil when it lands.
+	offline OfflineSink
+
+	// routes maps each connected device's resolved name to its live
+	// connection writers; routing.go owns the semantics. Guarded by routesMu.
+	// A device may hold several writers across a reconnect overlap, mirroring
+	// the presence tracker's refcount view of the same race.
+	routesMu sync.Mutex
+	routes   map[string]map[*connWriter]struct{}
+
 	// conns tracks every live WebSocket with its per-connection cancel func
 	// so shutdown can close them all and, only as a last resort, abort the
 	// stragglers. Guarded by connsMu; entries are added after Accept and
@@ -142,7 +156,12 @@ type Server struct {
 // disables it — the pre-presence skeleton shape, kept for tests that exercise
 // other machinery — but every production binary passes a real Tracker backed
 // by the store, so liveness facts survive a coordinator restart.
-func NewServer(resolver tsauth.Resolver, clk clock.Clock, logger *slog.Logger, tracker *presence.Tracker) *Server {
+//
+// offline wires sto:offline-queue's delivery seam (see OfflineSink in
+// routing.go). Nil is today's honest default: messages for offline devices
+// are dropped loudly, not retained by anything. The queue item passes a real
+// sink here when it lands.
+func NewServer(resolver tsauth.Resolver, clk clock.Clock, logger *slog.Logger, tracker *presence.Tracker, offline OfflineSink) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -151,7 +170,9 @@ func NewServer(resolver tsauth.Resolver, clk clock.Clock, logger *slog.Logger, t
 		logger:   logger,
 		clk:      clk,
 		presence: tracker,
+		offline:  offline,
 		conns:    make(map[*websocket.Conn]context.CancelFunc),
+		routes:   make(map[string]map[*connWriter]struct{}),
 	}
 }
 
@@ -486,6 +507,21 @@ func (s *Server) serveConn(ctx context.Context, ws *websocket.Conn, out *connWri
 		defer s.presence.ConnectionLost(device)
 	}
 
+	// Routable from this instant (sto:text-messaging): the resolved identity
+	// is proven, so this connection can receive messages from now on.
+	//
+	// Registered AFTER the presence block on purpose, because defers unwind
+	// LIFO and teardown order is a correctness property, not taste: the route
+	// must disappear BEFORE ConnectionLost queues the offline verdict. Then
+	// any device that observes "offline" knows routing already agrees — there
+	// is no window in which presence says offline while a write into a dying
+	// socket still counts as delivery. The mirror-image accept cost (a few
+	// instructions where the connection is authenticated but not yet
+	// routable) is absorbed by at-least-once semantics and, later, by the
+	// queue: nothing here promises instant routability mid-accept.
+	s.addRoute(device, out)
+	defer s.removeRoute(device, out)
+
 	for {
 		typ, frame, err := ws.Reader(ctx)
 		if err != nil {
@@ -557,12 +593,12 @@ func (s *Server) serveConn(ctx context.Context, ws *websocket.Conn, out *connWri
 // dispatch handles one decoded envelope. It reports false when the connection
 // must close (version-gate refusal), true otherwise.
 //
-// This switch is the skeleton's deliberate minimum. Queue drain belongs to
-// sto:offline-queue, key distribution to ts:queue-sealed-box: each lands here
-// as its own case with its owning item's tests. Everything unrecognized is
-// logged-and-ignored — NEVER rejected — because ignoring unknown payloads is
-// exactly how an older coordinator survives a newer client (adr:003
-// mixed-fleet rule).
+// The text cases are sto:text-messaging's routing (see routing.go for the
+// delivery rules). Queue drain belongs to sto:offline-queue, key distribution
+// to ts:queue-sealed-box: each lands here as its own case with its owning
+// item's tests. Everything unrecognized is logged-and-ignored — NEVER
+// rejected — because ignoring unknown payloads is exactly how an older
+// coordinator survives a newer client (adr:003 mixed-fleet rule).
 //
 // # Criterion 5, verified at the only place new client input enters
 //
@@ -593,6 +629,15 @@ func (s *Server) dispatch(ctx context.Context, out *connWriter, id tsauth.Identi
 
 	case *walkiev1.Envelope_PresenceStatusChange:
 		return s.handleStatusChange(ctx, out, id, payload.PresenceStatusChange)
+
+	case *walkiev1.Envelope_DirectMessage:
+		// env rides along so routing can carry message_id/sent_at over to
+		// the stamped delivery unchanged (routing.go explains why both must
+		// survive transit verbatim).
+		return s.handleDirect(ctx, out, id, env, payload.DirectMessage)
+
+	case *walkiev1.Envelope_BroadcastMessage:
+		return s.handleBroadcast(ctx, out, id, env, payload.BroadcastMessage)
 
 	default:
 		// Structured, content-free: the payload TYPE name is protocol

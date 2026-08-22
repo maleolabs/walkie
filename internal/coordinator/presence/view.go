@@ -80,6 +80,23 @@ func (t *Tracker) Snapshot() []Entry {
 	return out
 }
 
+// Known reports whether the tracker has any record of device: a connection
+// observed, a heartbeat seen, or a liveness row loaded from a previous
+// process. It says nothing about being online — use Snapshot for that.
+//
+// Why sto:text-messaging needs it: routing an unroutable DirectMessage must
+// distinguish "device this tailnet has never resolved" (a typo — answered
+// with ProtocolError DEVICE_UNKNOWN, per the schema's field doc) from
+// "known device that is simply not connected right now" (an ordinary state,
+// handed to sto:offline-queue's extension point, never an error). Only the
+// tracker knows the first fact; nothing else in the server records it.
+func (t *Tracker) Known(device string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.devices[device]
+	return ok
+}
+
 // Subscribe returns a Subscription receiving every subsequent change.
 //
 // Ordering with Snapshot: subscribe FIRST, then take the Snapshot. A change

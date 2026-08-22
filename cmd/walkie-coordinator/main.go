@@ -157,7 +157,11 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	coord := coordinator.NewServer(resolver, clock.Real(), logger, tracker)
+	// The nil OfflineSink is today's honest shape: messages for offline
+	// devices are dropped with a loud log line, because nothing here may
+	// pretend to retain them. sto:offline-queue replaces the nil when it
+	// lands (see OfflineSink in internal/coordinator/routing.go).
+	coord := coordinator.NewServer(resolver, clock.Real(), logger, tracker, nil)
 	if err := coord.Serve(ctx, ln); err != nil {
 		// The drain can genuinely fail: a peer that ignores close frames
 		// outlives the grace window. Saying "shutdown complete" then would
