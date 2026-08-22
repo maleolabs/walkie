@@ -87,9 +87,10 @@ func (v *View) Snapshot() []Device {
 //     previously stored last-seen is KEPT — it remains true that the device
 //     was seen then, and clearing it would lose history the offline transition
 //     has not replaced yet.
-//   - OFFLINE: last_seen travels with the update and is stored verbatim,
-//     including "absent" — a device known only by its status label was never
-//     observed alive, and inventing a timestamp would be a lie.
+//   - OFFLINE: last_seen travels with the update and is stored as given;
+//     an update without one leaves the previously known last-seen untouched
+//     (the coordinator only omits last_seen for devices never observed,
+//     which have no client-side entry yet).
 //   - UNSPECIFIED (or any value this build does not know): ignored. Version
 //     skew must degrade to no-op here exactly as unknown envelope payloads
 //     degrade to ignore on the wire (adr:003); guessing a state from a number
