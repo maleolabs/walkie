@@ -123,6 +123,20 @@ func runHerd(t *testing.T, seed uint64) []time.Time {
 // prove the twenty links carry live traffic without touching the clock: reads
 // and writes block on net.Pipe semantics only, so they add no scheduling
 // dependence to the timing assertions.
+//
+// ErrPartitioned is retryable here, not fatal: a partition window is transient
+// by design (Link.Heal clears it) and leaves the connection usable, unlike EOF
+// or ErrClosedPipe, which mean the peer is gone for good. An echo that exits on
+// a window leaves its pipe with no reader, and the next client round-trip then
+// parks in net.Pipe.Write forever — found by the sto:device-presence review as
+// a flake in TestPartitionAllSeversEveryLinkAndHealAllRestores (root cause and
+// reproduction recorded there): an echo entering Read between PartitionAll and
+// HealAll saw ErrPartitioned at the entry check and died, hanging
+// assertAllConnected until the 600s timeout. Retrying costs a spin bounded by
+// the window's length, which in these scenarios is a few statements wide; the
+// alternative — stopping echoes around PartitionAll and restarting after
+// HealAll — would need tracked goroutines and conn lifecycle to avoid stacking
+// duplicate readers, a larger change than the flake warrants.
 func startEchoServers(fleet *Fleet) {
 	for i := range fleet.Size() {
 		conn := fleet.ServerConn(i)
@@ -130,9 +144,15 @@ func startEchoServers(fleet *Fleet) {
 			buf := make([]byte, 1)
 			for {
 				if _, err := conn.Read(buf); err != nil {
+					if errors.Is(err, ErrPartitioned) {
+						continue // partition window: link heals, conn stays usable
+					}
 					return
 				}
 				if _, err := conn.Write(buf[:1]); err != nil {
+					if errors.Is(err, ErrPartitioned) {
+						continue // partition window: link heals, conn stays usable
+					}
 					return
 				}
 			}
