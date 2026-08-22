@@ -4,6 +4,7 @@ package audio
 
 import (
 	"errors"
+	"io"
 	"testing"
 )
 
@@ -31,5 +32,52 @@ func TestVoiceBackendNotWiredYet(t *testing.T) {
 		if err := construct(); !errors.Is(err, ErrNotImplemented) {
 			t.Errorf("%s returned %v, want ErrNotImplemented", name, err)
 		}
+	}
+}
+
+// TestVoiceBuildExercisesThePipelineThroughNullBackend is the voice-tagged
+// half of ts:test-harness criterion 4. The untagged tests prove the null
+// pipeline works; this one proves it works *in the voice build specifically* —
+// the variant CI has no sound device for — so the capture-encode-decode-play
+// flow stays exercisable on both sides of the adr:002 tag split. When the real
+// backend lands, this test remains valid: the null components are hardware-free
+// by construction and are how the wiring will be tested before any device is.
+func TestVoiceBuildExercisesThePipelineThroughNullBackend(t *testing.T) {
+	const frames = 3
+
+	src := NewNullCapture(frames)
+	enc, dec := NewNullEncoder(), NewNullDecoder()
+	sink := NewNullPlayback()
+	t.Cleanup(func() {
+		_ = src.Close()
+		_ = enc.Close()
+		_ = dec.Close()
+		_ = sink.Close()
+	})
+
+	buf := make([]byte, FrameBytes)
+	for range frames {
+		n, err := src.ReadFrame(buf)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("ReadFrame: %v", err)
+		}
+		packet, err := enc.EncodeFrame(nil, buf[:n])
+		if err != nil {
+			t.Fatalf("EncodeFrame: %v", err)
+		}
+		pcm, err := dec.DecodeFrame(nil, packet)
+		if err != nil {
+			t.Fatalf("DecodeFrame: %v", err)
+		}
+		if err := sink.WriteFrame(pcm); err != nil {
+			t.Fatalf("WriteFrame: %v", err)
+		}
+	}
+
+	if sink.Frames != frames {
+		t.Errorf("voice build played %d null frames, want %d", sink.Frames, frames)
 	}
 }
