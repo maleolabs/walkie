@@ -182,6 +182,37 @@ func (f *Fake) After(d time.Duration) <-chan time.Time {
 // test that passes for the wrong reason.
 func (f *Fake) Sleep(d time.Duration) { <-f.After(d) }
 
+// Until returns a channel that receives when the clock has advanced past the
+// absolute time t — the deadline-shaped counterpart to [Fake.After].
+//
+// Why it exists: computing a remaining delay and then waiting for it, as in
+// `Sleep(t.Sub(Now()))`, spans two separate lock acquisitions on the fake. On
+// the fleet simulator's shared clock, the driving test can Advance between
+// those two calls, and the waiter then lands at now+d for a now that no longer
+// holds — not a late fire but a wrongly-placed one. Until registers the
+// absolute deadline atomically under the clock lock, so the fire time is
+// correct no matter when the parking goroutine gets scheduled. Anything with a
+// deadline rather than a duration — presence TTLs, backoff targets, queue
+// retention — wants this shape.
+//
+// Until lives on *Fake rather than on the Clock interface deliberately: the
+// interface stays the minimal set production code needs today, and the three
+// consumer items wire their deadline logic to tests through [*Fake]. If a
+// consumer item ends up needing absolute-deadline parking in production code,
+// promoting it to the interface is the obvious move — not done speculatively.
+func (f *Fake) Until(t time.Time) <-chan time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	ch := make(chan time.Time, 1)
+	if !t.After(f.now) {
+		ch <- f.now
+		return ch
+	}
+	f.waiters = append(f.waiters, &waiter{at: t, ch: ch})
+	return ch
+}
+
 // Advance moves the clock forward by d and fires every waiter that is now due.
 //
 // Waiters are fired after the lock is released, so a fired goroutine may arm a

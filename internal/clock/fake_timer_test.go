@@ -222,3 +222,39 @@ func TestRealClockTimerIsWired(t *testing.T) {
 		t.Error("real Stop on a pending timer reported false, want true")
 	}
 }
+
+// Until is the absolute-deadline park the fleet simulator leans on: the
+// deadline is registered atomically under the clock lock, so a driver
+// advancing the shared clock between a caller's deadline computation and its
+// park cannot displace the fire. A past deadline fires immediately.
+func TestUntilRegistersAnAbsoluteDeadline(t *testing.T) {
+	f := NewFake(epoch)
+
+	deadline := epoch.Add(45 * time.Second)
+	ch := f.Until(deadline)
+	if n := f.Waiters(); n != 1 {
+		t.Fatalf("Waiters() = %d after Until, want 1", n)
+	}
+
+	f.Advance(44 * time.Second)
+	select {
+	case v := <-ch:
+		t.Fatalf("fired one second early, at %v", v)
+	default:
+	}
+
+	f.Advance(time.Second)
+	select {
+	case v := <-ch:
+		if !v.Equal(epoch.Add(45 * time.Second)) {
+			t.Errorf("fired at %v, want %v", v, epoch.Add(45*time.Second))
+		}
+	default:
+		t.Fatal("did not fire when the clock crossed the deadline")
+	}
+
+	// Already-crossed deadlines fire immediately with the current time.
+	if v := <-f.Until(epoch); !v.Equal(f.Now()) {
+		t.Errorf("past-deadline Until fired at %v, want %v", v, f.Now())
+	}
+}
