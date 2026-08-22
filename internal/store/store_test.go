@@ -42,14 +42,16 @@ func TestOpenCreatesAndMigratesOnFirstStart(t *testing.T) {
 		t.Fatalf("fresh database file mode = %#o, want %#o", got, fileMode)
 	}
 
-	// The ledger exists and reports version 0 for an empty sequence; the
-	// mechanism runs on every open even while no domain table exists yet.
+	// The ledger exists and reports the embedded sequence's end; the
+	// mechanism runs on every open. Asserted against len(migrations) rather
+	// than a literal so appending a domain migration (sto:device-presence did
+	// exactly that) keeps this a test of the MECHANISM, not of a count.
 	v, err := s.SchemaVersion()
 	if err != nil {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
-	if v != 0 {
-		t.Fatalf("fresh SchemaVersion = %d, want 0", v)
+	if v != int64(len(migrations)) {
+		t.Fatalf("fresh SchemaVersion = %d, want %d (len(migrations))", v, len(migrations))
 	}
 	var n int
 	if err := s.DB().QueryRow(
