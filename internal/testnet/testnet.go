@@ -20,12 +20,21 @@
 // Partition and added latency, over a stream connection. That covers the control
 // plane, which is a WebSocket over TCP.
 //
-// It deliberately does NOT model packet loss. Loss is a datagram concept, and
-// walkie's only datagram path is the real-time audio data plane — which is phase
-// 2 in plan:roadmap-v1, not the MVP. Adding a loss knob to a stream link now
-// would be inventing the wrong abstraction and then building on it. The loss
-// injection ts:test-harness asks for belongs with the UDP data plane that will
-// need it.
+// It deliberately does NOT model packet loss — on the stream link. Loss is a
+// datagram concept, and dropping bytes from a reliable byte stream would be a
+// knob that models nothing real: net.Pipe promises that what is written is
+// what is read, in order. The argument stands for this type exactly as
+// written.
+//
+// What changed since that comment was written is the answer to "so where does
+// loss live": in [DatagramLink] (datagram.go), a UDP-shaped link whose every
+// datagram is independently delivered or dropped, with latency paid on the
+// same injected clock. It exists because adr:001-transport-topology puts
+// real-time audio on RTP over UDP in phase 2 and ts:test-harness criterion 1
+// requires injectable loss per test; building the datagram shape now gives
+// phase 2 a tested seam instead of a deadline-driven invention. The stream
+// Link keeps its exact semantics — the MVP control plane runs on it, and no
+// loss knob was bolted onto it to satisfy the criterion.
 //
 // Two simplifications worth knowing:
 //
