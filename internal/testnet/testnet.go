@@ -23,8 +23,7 @@
 // It deliberately does NOT model packet loss — on the stream link. Loss is a
 // datagram concept, and dropping bytes from a reliable byte stream would be a
 // knob that models nothing real: net.Pipe promises that what is written is
-// what is read, in order. The argument stands for this type exactly as
-// written.
+// what is read, in order. The argument stands for this type in substance.
 //
 // What changed since that comment was written is the answer to "so where does
 // loss live": in [DatagramLink] (datagram.go), a UDP-shaped link whose every

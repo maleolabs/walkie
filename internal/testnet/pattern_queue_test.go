@@ -2,7 +2,6 @@ package testnet
 
 import (
 	"errors"
-	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -65,9 +64,7 @@ func TestPatternQueueResumesFromAcknowledgedPosition(t *testing.T) {
 			_, err := client.Write([]byte{byte(pos)})
 			errc <- err
 		}()
-		for fake.Waiters() == 0 {
-			runtime.Gosched()
-		}
+		waitForPark(t, fake)
 		fake.Advance(frameDelay)
 		err := <-errc
 		if err == nil {

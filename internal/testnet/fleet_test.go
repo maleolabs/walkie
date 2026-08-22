@@ -1,6 +1,7 @@
 package testnet
 
 import (
+	"errors"
 	"io"
 	"slices"
 	"sort"
@@ -315,6 +316,37 @@ func TestScheduleQueuesBehindTheOutstandingEvent(t *testing.T) {
 		events[1].Kind != "queued-second" || !events[1].At.Equal(epoch.Add(5*time.Second)) {
 		t.Errorf("events = %+v, want late-first@+10s then queued-second@+5s (processed in queue order, logged at scheduled times)", events)
 	}
+}
+
+// PartitionAll and HealAll are the fleet-wide outage vocabulary a restart
+// scenario reaches for — sever every link at once, then restore them. These
+// smoke tests pin that semantics to per-link Partition/Heal so the delegates
+// cannot silently drift from the single-link behaviour they wrap.
+func TestPartitionAllSeversEveryLinkAndHealAllRestores(t *testing.T) {
+	fake := clock.NewFake(epoch)
+	fleet := NewFleet(fake, herdSeed, 2)
+	t.Cleanup(fleet.Shutdown)
+	startEchoServers(fleet)
+
+	fleet.PartitionAll()
+	for i := range fleet.Size() {
+		if !fleet.Link(i).Partitioned() {
+			t.Errorf("client %d's link not partitioned after PartitionAll", i)
+		}
+		if _, err := fleet.ClientConn(i).Write([]byte("x")); !errors.Is(err, ErrPartitioned) {
+			t.Errorf("client %d write during fleet-wide partition: got %v, want ErrPartitioned", i, err)
+		}
+	}
+
+	fleet.HealAll()
+	for i := range fleet.Size() {
+		if fleet.Link(i).Partitioned() {
+			t.Errorf("client %d's link still partitioned after HealAll", i)
+		}
+	}
+	// Traffic must actually flow again, not merely report healed: round-trip
+	// one byte through every connection.
+	assertAllConnected(t, fleet)
 }
 
 func TestNewFleetRejectsEmptyFleet(t *testing.T) {

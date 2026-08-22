@@ -12,6 +12,26 @@ import (
 // (backoff cancellation) and sto:offline-queue (retention deadlines) all arm
 // timers they must retract; see NewTimer on the Clock interface.
 
+// maxParkSpins bounds how long a test waits for a goroutine to park on the
+// fake clock. Every iteration yields the processor, so a healthy park
+// registers within a handful of spins; a million without means the park
+// wiring is broken or the goroutine never started. Unbounded, that failure
+// mode is a silent hang; bounded, it is a loud one.
+const maxParkSpins = 1 << 20
+
+// waitForPark spins until f reports at least one waiter, failing t rather
+// than hanging if nothing ever parks.
+func waitForPark(t *testing.T, f *Fake) {
+	t.Helper()
+	for range maxParkSpins {
+		if f.Waiters() > 0 {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatal("no goroutine parked on the fake clock within the spin budget")
+}
+
 func TestTimerFiresOnAdvance(t *testing.T) {
 	f := NewFake(epoch)
 	tm := f.NewTimer(45 * time.Second)
@@ -153,9 +173,7 @@ func TestFiredGoroutineCanRearmWithoutDeadlock(t *testing.T) {
 		rearmed <- f.NewTimer(10 * time.Second)
 	}()
 
-	for f.Waiters() == 0 {
-		runtime.Gosched()
-	}
+	waitForPark(t, f)
 	f.Advance(10 * time.Second)
 
 	tm := <-rearmed // reaching here proves the handler got past receiving the fire

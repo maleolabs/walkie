@@ -50,9 +50,11 @@ import (
 // time is correct no matter when the reactor gets scheduled).
 //
 // Outstanding work is tracked by one atomic counter, pending: an event adds
-// one when scheduled, receiving it moves it from queued to open turn (no
-// change — still one unit of work), and finishing its handler removes one.
-// Whatever the interleaving,
+// one before it is offered to its client's channel — never after the send
+// lands, or a driver could read pending == 0 while an event sits queued but
+// uncounted and declare quiescence mid-flight. Receiving moves the event from
+// queued to open turn (no change — still one unit of work), and finishing its
+// handler removes one. Whatever the interleaving,
 //
 //	pending == 0  ⇔  every scheduled event has been fully handled
 //
@@ -246,9 +248,21 @@ func (f *Fleet) Schedule(i int, at time.Time, kind string) {
 		return // torn down; the event dies with the simulation
 	default:
 	}
+	// Count before offering: incrementing only once the send has landed
+	// leaves a window in which the event is queued but uncounted, and a
+	// driver reading pending == 0 inside that window stops the simulation
+	// with work still outstanding. The deferred decrement covers the
+	// overflow path, so the panic below cannot leak a phantom unit of work.
+	f.pending.Add(1)
+	queued := false
+	defer func() {
+		if !queued {
+			f.pending.Add(-1)
+		}
+	}()
 	select {
 	case f.clients[i].events <- ev:
-		f.pending.Add(1)
+		queued = true
 	default:
 		panic(fmt.Sprintf("testnet: client %d has more than %d queued events — bound the scenario", i, clientQueueCapacity))
 	}
@@ -318,20 +332,10 @@ func (f *Fleet) run(i int) {
 	}
 }
 
-// Record appends an observation to the fleet log, stamped with the current
-// fake time. Safe for concurrent handlers; that is the point — the log is the
-// aggregate view tests assert on.
-func (f *Fleet) Record(kind string, i int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.events = append(f.events, FleetEvent{At: f.clk.Now(), Client: i, Kind: kind})
-}
-
 // Log appends ev verbatim, keeping its scheduled At rather than stamping the
 // processing time. Handlers that must produce a reproducible timeline log this
 // way: processing time drifts with driver step alignment, scheduled time does
-// not. Record remains for observations whose point is when something actually
-// happened relative to the clock.
+// not.
 func (f *Fleet) Log(ev FleetEvent) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

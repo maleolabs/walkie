@@ -3,7 +3,6 @@ package testnet
 import (
 	"errors"
 	"math/rand/v2"
-	"runtime"
 	"testing"
 	"time"
 
@@ -180,9 +179,7 @@ func TestDatagramLatencyIsPaidOnTheInjectedClock(t *testing.T) {
 	}()
 
 	// Wait until the sender is parked on the fake clock.
-	for fake.Waiters() == 0 {
-		runtime.Gosched()
-	}
+	waitForPark(t, fake)
 	select {
 	case err := <-errc:
 		t.Fatalf("Send completed before the clock advanced: %v", err)
@@ -218,9 +215,7 @@ func TestDatagramPartitionDropsInFlightAndRefusesSends(t *testing.T) {
 	go func() {
 		errc <- a.Send([]byte("in flight"))
 	}()
-	for fake.Waiters() == 0 {
-		runtime.Gosched()
-	}
+	waitForPark(t, fake)
 
 	l.Partition()
 	fake.Advance(5 * time.Millisecond)
@@ -244,9 +239,7 @@ func TestDatagramPartitionDropsInFlightAndRefusesSends(t *testing.T) {
 	go func() {
 		errc2 <- a.Send([]byte("after heal"))
 	}()
-	for fake.Waiters() == 0 {
-		runtime.Gosched()
-	}
+	waitForPark(t, fake)
 	fake.Advance(5 * time.Millisecond)
 	if err := <-errc2; err != nil {
 		t.Fatalf("Send after heal: %v", err)
@@ -309,13 +302,11 @@ func TestDatagramSingleSenderOrderIsPreserved(t *testing.T) {
 		}
 	}()
 
-	// One latency per send, released one at a time. The spin waits for the
-	// sender to park on the fake clock so each Advance releases exactly the
-	// send that is waiting — no scheduling luck involved.
+	// One latency per send, released one at a time. Each iteration waits for
+	// the sender to park on the fake clock so each Advance releases exactly
+	// the send that is waiting — no scheduling luck involved.
 	for range n {
-		for fake.Waiters() == 0 {
-			runtime.Gosched()
-		}
+		waitForPark(t, fake)
 		fake.Advance(time.Millisecond)
 	}
 	<-sent
@@ -350,6 +341,31 @@ func TestDatagramCloseUnblocksRecvAndCountsLateArrivals(t *testing.T) {
 	}
 	if s := l.Stats(); s.Dropped != 1 {
 		t.Errorf("Stats() = %+v, want the arrival at a closed endpoint counted as dropped", s)
+	}
+}
+
+// Partitioned is the state query outage tests read between Partition and
+// Heal; pinning it to both transitions keeps the query honest rather than a
+// constant in disguise.
+func TestDatagramPartitionedTracksPartitionAndHeal(t *testing.T) {
+	l := NewDatagramLink(clock.Real(), rand.New(rand.NewPCG(17, 18)), DatagramConditions{})
+	a, b := l.Endpoints()
+	t.Cleanup(func() {
+		_ = a.Close()
+		_ = b.Close()
+	})
+
+	l.Partition()
+	if !l.Partitioned() {
+		t.Fatal("Partitioned() = false right after Partition, want true")
+	}
+	if err := a.Send([]byte("severed")); !errors.Is(err, ErrPartitioned) {
+		t.Errorf("Send while partitioned: got %v, want ErrPartitioned", err)
+	}
+
+	l.Heal()
+	if l.Partitioned() {
+		t.Fatal("Partitioned() = true right after Heal, want false")
 	}
 }
 
