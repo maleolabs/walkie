@@ -915,7 +915,23 @@ type DirectMessage struct {
 	// as delivered-but-wrong. Sized generously for terminal chat while keeping
 	// one oversized message from dominating the offline queue's bounded
 	// retention (req:text-messaging, req:offline-delivery).
-	Body          string `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`
+	Body string `protobuf:"bytes,2,opt,name=body,proto3" json:"body,omitempty"`
+	// sender is the device that composed this message, named as the tailnet
+	// resolves it — the receiving client's attribution of who said what.
+	//
+	// SERVER-AUTHORITATIVE, same rule as presence (req:device-presence): the
+	// COORDINATOR fills this from the connection's resolved tailnet identity
+	// (adr:004's WhoIs gate) at ingress, overwriting whatever the sender's
+	// payload carried. A client-set value is never trusted and never survives
+	// transit; there is no path by which a device can attribute a message to a
+	// peer other than the connection it actually arrived on.
+	//
+	// Added ADDITIVELY (PM-authorized revision under sto:text-messaging):
+	// field number 3 continues the numbering, nothing was renumbered, so per
+	// adr:003's mixed-fleet rule old receivers ignore the field as unknown and
+	// old coordinators simply leave it empty — attribution degrades to absent,
+	// never to wrong.
+	Sender        string `protobuf:"bytes,3,opt,name=sender,proto3" json:"sender,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -964,6 +980,13 @@ func (x *DirectMessage) GetBody() string {
 	return ""
 }
 
+func (x *DirectMessage) GetSender() string {
+	if x != nil {
+		return x.Sender
+	}
+	return ""
+}
+
 // BroadcastMessage is text delivered to every device currently registered
 // with the coordinator. req:text-messaging.
 type BroadcastMessage struct {
@@ -971,7 +994,17 @@ type BroadcastMessage struct {
 	// body is the message text, as with DirectMessage — same receiver-enforced
 	// bound of at most 4096 bytes of UTF-8, rejected (not truncated) when
 	// exceeded.
-	Body          string `protobuf:"bytes,1,opt,name=body,proto3" json:"body,omitempty"`
+	Body string `protobuf:"bytes,1,opt,name=body,proto3" json:"body,omitempty"`
+	// sender is the composing device, coordinator-filled from the connection's
+	// resolved tailnet identity at ingress and never trusted from the client
+	// payload — identical contract to DirectMessage.sender, which see. A
+	// broadcast especially needs server-side attribution: it lands in a shared
+	// conversation on every device, where an unattributed line would be
+	// unanswerable and a forged one libellous.
+	//
+	// Added additively (field 2, next free; no renumbering) per adr:003's
+	// mixed-fleet evolution rule.
+	Sender        string `protobuf:"bytes,2,opt,name=sender,proto3" json:"sender,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1009,6 +1042,13 @@ func (*BroadcastMessage) Descriptor() ([]byte, []int) {
 func (x *BroadcastMessage) GetBody() string {
 	if x != nil {
 		return x.Body
+	}
+	return ""
+}
+
+func (x *BroadcastMessage) GetSender() string {
+	if x != nil {
+		return x.Sender
 	}
 	return ""
 }
@@ -1667,12 +1707,14 @@ const file_walkie_v1_control_proto_rawDesc = "" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x127\n" +
 	"\tlast_seen\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen\".\n" +
 	"\x14PresenceStatusChange\x12\x16\n" +
-	"\x06status\x18\x01 \x01(\tR\x06status\"A\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\"Y\n" +
 	"\rDirectMessage\x12\x1c\n" +
 	"\trecipient\x18\x01 \x01(\tR\trecipient\x12\x12\n" +
-	"\x04body\x18\x02 \x01(\tR\x04body\"&\n" +
+	"\x04body\x18\x02 \x01(\tR\x04body\x12\x16\n" +
+	"\x06sender\x18\x03 \x01(\tR\x06sender\">\n" +
 	"\x10BroadcastMessage\x12\x12\n" +
-	"\x04body\x18\x01 \x01(\tR\x04body\"\xc5\x01\n" +
+	"\x04body\x18\x01 \x01(\tR\x04body\x12\x16\n" +
+	"\x06sender\x18\x02 \x01(\tR\x06sender\"\xc5\x01\n" +
 	"\x0fAttachmentOffer\x12#\n" +
 	"\rattachment_id\x18\x01 \x01(\tR\fattachmentId\x12\x1a\n" +
 	"\bfilename\x18\x02 \x01(\tR\bfilename\x12\x1d\n" +

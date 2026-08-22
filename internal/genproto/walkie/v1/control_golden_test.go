@@ -23,8 +23,10 @@
 // oneof payload in Envelope — all fifteen — plus variants that exercise every
 // envelope-level field (message_id, sent_at, position, received_at), both
 // PresenceState values, all three ProtocolErrorCode values, the nested
-// repeated PublicKeyEntry, bytes fields, an empty payload message, and a
-// wholly empty envelope. PublicKeyEntry and the enums have no standalone wire
+// repeated PublicKeyEntry, bytes fields, an empty payload message, a wholly
+// empty envelope, and the coordinator-filled sender field on both text
+// payloads (sto:text-messaging's additive attribution fields). PublicKeyEntry
+// and the enums have no standalone wire
 // presence; they are pinned through the payloads that carry them. If you add a
 // payload to the schema, add its case here in the same commit — buf breaking
 // will already have forced the question.
@@ -185,6 +187,22 @@ var goldenEnvelopes = map[string]struct {
 		})
 	}, wantHex: "0a1a30314a385a395033513756364d3454384a3257585952354e3643120608808799d406182b220608da8799d4067a240a066e61732d3031121a717565756564207768696c6520796f7520776572652061776179"},
 
+	// The same DM as dm_live WITH the coordinator-filled sender field
+	// (sto:text-messaging's server-authoritative attribution, added
+	// additively as DirectMessage field 3). Pins that the new field encodes
+	// as tag 0x1a INSIDE the payload and that its presence does not move any
+	// other byte of the envelope — the additive-evolution guarantee old
+	// receivers lean on.
+	"dm_sender_attributed": {build: func() *walkiev1.Envelope {
+		return goldenEnvelope(func(e *walkiev1.Envelope) {
+			e.MessageId = goldenMessageID
+			e.SentAt = goldenSentAt
+			e.Payload = &walkiev1.Envelope_DirectMessage{DirectMessage: &walkiev1.DirectMessage{
+				Recipient: "nas-01", Body: "wake up, deploy time", Sender: "laptop.tail-scale.ts.net.",
+			}}
+		})
+	}, wantHex: "0a1a30314a385a395033513756364d3454384a3257585952354e3643120608808799d4067a390a066e61732d3031121477616b652075702c206465706c6f792074696d651a196c6170746f702e7461696c2d7363616c652e74732e6e65742e"},
+
 	"broadcast_maintenance": {build: func() *walkiev1.Envelope {
 		return goldenEnvelope(func(e *walkiev1.Envelope) {
 			e.MessageId = goldenMessageID
@@ -194,6 +212,20 @@ var goldenEnvelopes = map[string]struct {
 			}}
 		})
 	}, wantHex: "0a1a30314a385a395033513756364d3454384a3257585952354e3643120608808799d4068201210a1f6d61696e74656e616e63652077696e646f772061742030323a303020555443"},
+
+	// The same broadcast WITH the coordinator-filled sender field (added
+	// additively as BroadcastMessage field 2). Same pin as
+	// dm_sender_attributed: new field inside the payload, zero drift
+	// elsewhere.
+	"broadcast_sender_attributed": {build: func() *walkiev1.Envelope {
+		return goldenEnvelope(func(e *walkiev1.Envelope) {
+			e.MessageId = goldenMessageID
+			e.SentAt = goldenSentAt
+			e.Payload = &walkiev1.Envelope_BroadcastMessage{BroadcastMessage: &walkiev1.BroadcastMessage{
+				Body: "maintenance window at 02:00 UTC", Sender: "laptop.tail-scale.ts.net.",
+			}}
+		})
+	}, wantHex: "0a1a30314a385a395033513756364d3454384a3257585952354e3643120608808799d40682013c0a1f6d61696e74656e616e63652077696e646f772061742030323a30302055544312196c6170746f702e7461696c2d7363616c652e74732e6e65742e"},
 
 	"attachment_offer_voice_note": {build: func() *walkiev1.Envelope {
 		return goldenEnvelope(func(e *walkiev1.Envelope) {
