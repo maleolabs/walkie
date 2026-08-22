@@ -34,6 +34,66 @@ package audio
 // cross-compile libopus separately, which is worth a lot given the zig cc
 // decision. Record the outcome in the spike's conclusion, then revise
 // fnd:terminal-audio-constraints with the measured figures.
+//
+// # What the partial spike run settled, and what it did not
+//
+// spk:audio-toolchain-viability ran on 2026-08-21 with no fleet ARM device and
+// no zig on PATH, so it settled the binding axis and left every hardware
+// measurement open. Its conclusion is still pending: nothing below says the
+// audio path works on the fleet, only which candidate is worth taking there.
+//
+// Capture and playback: github.com/gen2brain/malgo v0.11.26 wins the axis
+// outright. It vendors miniaudio.c and miniaudio.h in the module, uses no
+// pkg-config, and its only linux LDFLAGS are -ldl -lpthread -lm, which glibc
+// already provides. ALSA and PulseAudio are dlopen'd by soname at runtime
+// (libasound.so.2, libpulse.so.0), so building it needs no audio dev package
+// and no per-target sysroot — precisely the property adr:002's zig cc choice
+// is meant to buy. Its resolved arm64 cgo CFLAGS carry no ARM32-only flags, so
+// zig cc has nothing obvious to reject.
+//
+// Opus: no candidate satisfies the axis on arm64, and that is the finding that
+// matters, because arm64 is the fleet.
+//
+//   - gopkg.in/hraban/opus.v2, and the newer github.com/hraban/opus, are
+//     "#cgo pkg-config: opus opusfile" — a system libopus, libopusfile and
+//     libogg resolved through pkg-config, which is exactly the per-target
+//     sysroot the zig cc decision exists to avoid. Neither builds at all
+//     without them.
+//   - layeh.com/gopus appears to vendor libopus, and does, but the file that
+//     compiles the vendored tree is constrained to "amd64,cgo 386,cgo". On
+//     arm64 the package silently selects its pkg-config file instead, so the
+//     vendoring buys nothing on the target that matters. Do not conclude this
+//     binding works because it built on your laptop; that is the amd64 path.
+//     The vendored codec is libopus 1.1.2 (2015) with an x86 float config.h,
+//     and the module has not moved since 2021.
+//
+// So a libopus-based voice build still has to obtain libopus for arm64 some
+// other way: vendor the C into this repository and compile it from this file
+// with -DFIXED_POINT -DDISABLE_FLOAT_API -DOPUS_BUILD -DVAR_ARRAYS, or build it
+// once per target. Which of those is chosen is a build-system decision and
+// belongs to ts:build-release-matrix, not here.
+//
+// # One finding that is bigger than the binding choice
+//
+// github.com/tphakala/go-opus v1.0.0 is a cgo-free pure-Go port of libopus
+// 1.6.1, held bit-exact against the C reference, with a complete decoder and a
+// complete encoder. Both fnd:terminal-audio-constraints and adr:002 rest on
+// "no viable pure-Go Opus encoder exists", so the literal premise no longer
+// holds. It is not a drop-in for walkie, for two reasons that bite exactly
+// where this design leans hardest:
+//
+//   - its encoder is forced CELT-only and not configurable, which is not the
+//     mode libopus picks for 16 kHz mono speech near 20 kbps — it would pick
+//     SILK or hybrid;
+//   - its DTX triggers only on exact digital silence, not on a VAD verdict, so
+//     it will effectively never fire on a live microphone. DTX collapsing
+//     bandwidth during speech pauses is the property fnd:terminal-audio-
+//     constraints leans on for the constrained links in vis:terminal-mesh-comms.
+//
+// It also requires go 1.26 while this module is on 1.25.12. So CGO stays
+// unavoidable for walkie's operating point today, and this file's shape stands.
+// Whether the premise sentence in fnd:terminal-audio-constraints should be
+// narrowed is a knowledge change and /eka-discuss's call, not this file's.
 
 const available = true
 
