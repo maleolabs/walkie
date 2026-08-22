@@ -22,8 +22,26 @@
 // Write that test first. It is only practical against an injectable clock — see
 // internal/clock and ts:test-harness.
 //
+// # How the constraint is held, not merely stated
+//
+// The [Tracker] makes client-asserted liveness UNREPRESENTABLE rather than
+// rejected at one call site: its only inputs are events the server itself
+// witnesses — ObserveHeartbeat, ConnectionEstablished, ConnectionLost — plus
+// TTL expiry. There is no flag, method or payload anywhere on the surface a
+// caller could use to mark a device online. Trusting client presence would
+// require inventing a new API, which is exactly the review checkpoint
+// criterion 5 wants. See the Tracker type comment for the full contract,
+// including restart semantics: nothing is online after startup until it is
+// observed alive again, and the schema holds no "online" column to resurrect.
+//
 // # Also in scope
 //
 // A user-set custom status message that survives that user's reconnect, and a
 // last-seen timestamp for offline devices.
+//
+// Status and liveness are different KINDS of thing and the package layout
+// says so: tracker.go owns the liveness FACT side, status.go owns the
+// user-authored LABEL side, view.go exposes the read model (Entry, Change,
+// Snapshot, Subscribe) that slice 2's broadcast hub consumes. A label never
+// implies liveness; liveness never clears a label.
 package presence
