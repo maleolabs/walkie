@@ -519,7 +519,14 @@ func (s *Server) serveConn(ctx context.Context, ws *websocket.Conn, out *connWri
 	// socket still counts as delivery. The mirror-image accept cost (a few
 	// instructions where the connection is authenticated but not yet
 	// routable) is absorbed by at-least-once semantics and, later, by the
-	// queue: nothing here promises instant routability mid-accept.
+	// queue: nothing here promises instant routability mid-accept. That same
+	// window has a second consequence: a message routed just after addRoute
+	// but before the first Hello's drain executes can reach the socket before
+	// the gap-queued message, inverting per-conversation order across the
+	// connect boundary — a sub-millisecond window that requires three network
+	// events to interleave; identity dedup is unaffected, walkie promises only
+	// per-conversation ordering, and this inversion is the known cost of
+	// declining ordering machinery here.
 	s.addRoute(device, out)
 	defer s.removeRoute(device, out)
 
