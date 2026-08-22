@@ -140,6 +140,17 @@ func run(logger *slog.Logger) error {
 
 	coord := coordinator.NewServer(resolver, clock.Real(), logger)
 	if err := coord.Serve(ctx, ln); err != nil {
+		// The drain can genuinely fail: a peer that ignores close frames
+		// outlives the grace window. Saying "shutdown complete" then would
+		// be false — tsnet and the store are about to close under live
+		// connections — so report what actually happened and still exit
+		// clean: SIGTERM was handled, and a supervisor should restart us
+		// normally rather than treat this as a crash.
+		if errors.Is(err, coordinator.ErrDrainIncomplete) {
+			logger.Warn("shutdown incomplete: connections outlived grace window",
+				slog.String("reason", err.Error()))
+			return nil
+		}
 		return fmt.Errorf("serve: %w", err)
 	}
 	logger.Info("shutdown complete")

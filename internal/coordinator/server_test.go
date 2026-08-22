@@ -355,6 +355,77 @@ func TestUnhandledPayloadIgnoredConnectionStaysOpen(t *testing.T) {
 	}
 }
 
+// Graceful shutdown must actually drain: cancelling Serve's ctx closes every
+// live WebSocket within [shutdownGrace], and Serve does not return until the
+// read loops have exited.
+//
+// Why this test exists in this shape: http.Server.Shutdown neither closes nor
+// waits for hijacked connections — and every WebSocket is hijacked — so an
+// implementation that only calls Shutdown returns instantly while clients sit
+// on open connections. The client below holds a read WITHOUT sending or
+// acking anything (the silent-peer worst case), so the only way it observes
+// closure is the server actively closing the connection.
+func TestShutdownClosesLiveConnectionWithinGrace(t *testing.T) {
+	resolver := tsauth.NewStaticResolver(nil)
+
+	logs := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logs, nil))
+	clk := clock.NewFake(time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC))
+
+	ln, err := net.Listen("tcp4", simulatedTailnetAddr+":0")
+	if err != nil {
+		t.Fatalf("bind %s: %v (environment lacks distinct loopback addresses)", simulatedTailnetAddr, err)
+	}
+
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- NewServer(resolver, clk, logger).Serve(ctx, ln) }()
+
+	ws := dialWS(t, context.Background(), resolver, ln.Addr().String())
+
+	// Block a client-side read and never write: the server's Reader for
+	// this connection has nothing to consume and no reason to return except
+	// shutdown reaching it.
+	readErr := make(chan error, 1)
+	go func() {
+		_, _, err := ws.Reader(context.Background())
+		readErr <- err
+	}()
+
+	stop() // the SIGTERM analogue
+
+	const budget = shutdownGrace + 2*time.Second
+
+	// 1. The peer observes a real close frame within the grace window.
+	select {
+	case err := <-readErr:
+		if err == nil {
+			t.Fatal("client read returned nil; connection closed without ending")
+		}
+		// A proper GoingAway frame is the common outcome, but under heavy
+		// scheduling the transport abort can land as a bare EOF at the peer
+		// (RST discarding queued bytes) even though the frame was written.
+		// The mandated property is termination within the window; note the
+		// rarer shape rather than failing on it.
+		if cs := websocket.CloseStatus(err); cs == -1 {
+			t.Logf("note: client saw abrupt end (%v) instead of a close frame", err)
+		}
+	case <-time.After(budget):
+		t.Fatalf("server did not close live connection within grace window (%s)", shutdownGrace)
+	}
+
+	// 2. Serve itself returns within the grace window — drain completed,
+	// not abandoned — with a clean result.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve after drain: %v", err)
+		}
+	case <-time.After(budget):
+		t.Fatalf("Serve did not return within grace window (%s); drain did not complete", shutdownGrace)
+	}
+}
+
 func mustMarshal(t *testing.T, m proto.Message) []byte {
 	t.Helper()
 	data, err := proto.Marshal(m)

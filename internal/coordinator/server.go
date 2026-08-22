@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -36,6 +37,27 @@ const maxEnvelopeBytes = 4 << 20
 // alive after this is stuck and better off killed than waited on.
 const shutdownGrace = 5 * time.Second
 
+// closeHandshakeBudget bounds how long one connection's polite GoingAway
+// handshake may hold up its handler before shutdown aborts the transport.
+//
+// Why not the whole window: Close waits for the peer to echo the close frame,
+// and a peer with no active reader never echoes — its internal timeout is 5s,
+// exactly the grace window, so an ordinary idle client would burn the entire
+// budget and every deploy would report an incomplete drain. Half the window
+// leaves the polite path to responsive peers and still reserves time for the
+// aborted handler to exit before the deadline.
+const closeHandshakeBudget = shutdownGrace / 2
+
+// ErrDrainIncomplete is returned by Serve when live connections were still
+// running when the grace window expired.
+//
+// Why a sentinel rather than logging alone: main.go must not print "shutdown
+// complete" when connections survived the drain — that line is a promise to
+// the operator that defers closing tsnet and the store ran under zero live
+// traffic. Callers distinguish it with errors.Is; it is still an abnormal
+// end, just one the process handles by reporting honestly instead of failing.
+var ErrDrainIncomplete = errors.New("coordinator: graceful drain incomplete")
+
 // Server is the coordinator's accept loop: one WebSocket per client, each
 // authenticated by tailnet identity before any protocol traffic flows.
 //
@@ -61,10 +83,39 @@ const shutdownGrace = 5 * time.Second
 // server_test.go binds loopback explicitly AS A SIMULATED TAILNET INTERFACE
 // and proves a dial addressed to another interface cannot reach the server.
 // Nothing in this package ever calls net.Listen itself.
+//
+// # Shutdown drains through a registry, not through net/http
+//
+// websocket.Accept hijacks every connection, and http.Server.Shutdown neither
+// closes nor waits for hijacked connections — so without help, Serve would
+// return while every read loop was still running and the grace window would
+// be dead code. The conns registry plus the wg counter below are that help:
+// shutdown force-closes each live connection to unblock its Reader, then
+// waits for the handlers to actually exit before returning.
 type Server struct {
 	resolver tsauth.Resolver
 	logger   *slog.Logger
 	clk      clock.Clock
+
+	// conns tracks every live WebSocket with its per-connection cancel func
+	// so shutdown can close them all and, only as a last resort, abort the
+	// stragglers. Guarded by connsMu; entries are added after Accept and
+	// removed when the connection's handler exits.
+	connsMu sync.Mutex
+	conns   map[*websocket.Conn]context.CancelFunc
+
+	// draining flips to true the moment shutdown starts snapshotting.
+	// Why it must be checked atomically WITH registration: a client dial
+	// completes while the handler is between Accept and track, so shutdown
+	// can legitimately run in that gap — without the flag its snapshot
+	// would miss the connection and neither close it nor count it as
+	// closed, hanging the drain wait for the whole grace window.
+	draining bool
+
+	// wg counts running connection handlers. Shutdown waits on it (bounded
+	// by the grace window) so Serve returning means the read loops really
+	// exited — not merely that net/http stopped counting them.
+	wg sync.WaitGroup
 }
 
 // NewServer returns a Server resolving identities through resolver and reading
@@ -75,15 +126,21 @@ func NewServer(resolver tsauth.Resolver, clk clock.Clock, logger *slog.Logger) *
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{resolver: resolver, logger: logger, clk: clk}
+	return &Server{
+		resolver: resolver,
+		logger:   logger,
+		clk:      clk,
+		conns:    make(map[*websocket.Conn]context.CancelFunc),
+	}
 }
 
 // Serve accepts connections on ln until ctx is cancelled or ln fails,
 // handling each connection concurrently.
 //
 // The listener comes from the caller (see the type comment for why). Serve
-// returns the accept error when it was not caused by shutdown; a clean
-// ctx cancellation returns nil.
+// returns the accept error when it was not caused by shutdown; a clean ctx
+// cancellation returns nil once every live connection has actually drained,
+// or [ErrDrainIncomplete] if connections outlived the grace window.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	hs := &http.Server{
 		Handler: s,
@@ -102,19 +159,155 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
+		// hs.Serve failed out from under us, so no shutdown will drain the
+		// live connections; release their contexts so nothing per-connection
+		// outlives this call.
+		for _, cancelConn := range s.liveCancels() {
+			cancelConn()
+		}
 		return fmt.Errorf("coordinator: serve %s: %w", ln.Addr(), err)
 	case <-ctx.Done():
-		// Graceful path: stop accepting, give live connections the grace
-		// window to finish their in-flight exchange, then return. Per-
-		// connection reads use ctx-derived contexts, so cancellation reaches
-		// them without a connection registry.
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
-		defer cancel()
-		if err := hs.Shutdown(shutdownCtx); err != nil {
-			s.logger.Warn("coordinator: shutdown timed out", slog.Duration("grace", shutdownGrace))
-			return nil
-		}
+		return s.shutdown(hs)
+	}
+}
+
+// shutdown stops the HTTP server and drains live WebSocket connections
+// within [shutdownGrace].
+//
+// Why an explicit registry close is needed at all: hs.Shutdown closes the
+// listener and waits only for handlers still holding non-hijacked
+// connections. Every WebSocket here is hijacked, so Shutdown returns while
+// all read loops are still running — closing each registered connection is
+// what actually reaches the blocked Readers, and the WaitGroup wait is what
+// makes "Serve returned" mean "no handler is still running" rather than
+// "net/http stopped counting".
+//
+// Why shutdown does NOT cancel the per-connection contexts up front: a
+// cancelled Reader ctx makes coder/websocket's timeout loop cut the TCP
+// connection immediately, without a close frame — the peer would see a bare
+// EOF and the "graceful" in graceful shutdown would be a lie. The GoingAway
+// close below is therefore what unblocks Readers; per-connection contexts
+// are force-cancelled only against stragglers that outlived the window.
+func (s *Server) shutdown(hs *http.Server) error {
+	deadline := time.Now().Add(shutdownGrace)
+	shutdownCtx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+
+	// Refuse new registrations before snapshotting: a handler still between
+	// Accept and track when this flag flips sees it under the same lock and
+	// closes its own connection instead of joining a drain that already
+	// counted it absent.
+	s.connsMu.Lock()
+	s.draining = true
+	s.connsMu.Unlock()
+
+	if err := hs.Shutdown(shutdownCtx); err != nil {
+		// Only non-hijacked work (an in-flight identity lookup, say) can
+		// cause this; the WebSocket drain below is bounded separately.
+		s.logger.Warn("coordinator: http shutdown timed out", slog.Duration("grace", shutdownGrace))
+	}
+
+	// Close every live connection. Close performs the WebSocket close
+	// handshake — sending GoingAway first, so well-behaved peers learn the
+	// server is stopping — and then closes the transport, which is what
+	// unblocks this side's Readers. Each close runs on its own goroutine so
+	// one stuck peer cannot serially eat the whole grace window.
+	for _, ws := range s.liveConns() {
+		go func() {
+			handshakeDone := make(chan struct{})
+			go func() {
+				defer close(handshakeDone)
+				_ = ws.Close(websocket.StatusGoingAway, "server shutting down")
+			}()
+			select {
+			case <-handshakeDone:
+			case <-time.After(closeHandshakeBudget):
+				s.abortConn(ws)
+			}
+		}()
+	}
+
+	waitCtx, cancelWait := context.WithDeadline(context.Background(), deadline)
+	defer cancelWait()
+	drained := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(drained)
+	}()
+
+	select {
+	case <-drained:
 		return nil
+	case <-waitCtx.Done():
+		// Last resort: abort whatever outlived the window at the transport
+		// level so no handler can outlive Serve itself.
+		for _, cancelConn := range s.liveCancels() {
+			cancelConn()
+		}
+		err := fmt.Errorf("%w: %d connection(s) still live after %s",
+			ErrDrainIncomplete, len(s.liveConns()), shutdownGrace)
+		s.logger.Warn("coordinator: shutdown incomplete", slog.String("reason", err.Error()))
+		return err
+	}
+}
+
+// liveConns snapshots the currently registered connections.
+func (s *Server) liveConns() []*websocket.Conn {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	live := make([]*websocket.Conn, 0, len(s.conns))
+	for ws := range s.conns {
+		live = append(live, ws)
+	}
+	return live
+}
+
+// liveCancels snapshots the cancel funcs of currently registered
+// connections, for the post-grace-window force-abort path.
+func (s *Server) liveCancels() []context.CancelFunc {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	cancels := make([]context.CancelFunc, 0, len(s.conns))
+	for _, cancelConn := range s.conns {
+		cancels = append(cancels, cancelConn)
+	}
+	return cancels
+}
+
+// track registers ws with its cancel func in the shutdown registry. It
+// reports false when shutdown has already begun: the caller must close the
+// connection itself and release, because the drain's snapshot will never
+// know about it. See the ServeHTTP call site for the ordering rules.
+func (s *Server) track(ws *websocket.Conn, cancelConn context.CancelFunc) bool {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	if s.draining {
+		return false
+	}
+	s.conns[ws] = cancelConn
+	return true
+}
+
+// release removes ws from the shutdown registry and marks its handler done.
+// Deferred by serveConn so both happen exactly once per accepted connection,
+// on every exit path including panics.
+func (s *Server) release(ws *websocket.Conn) {
+	s.connsMu.Lock()
+	delete(s.conns, ws)
+	s.connsMu.Unlock()
+	s.wg.Done()
+}
+
+// abortConn cancels one connection's context: the transport-level breaker
+// shutdown uses when a connection's polite close handshake stalls. Cancelling
+// makes coder/websocket's timeout loop close the underlying connection,
+// which both ends the stalled handshake and unblocks the handler's Reader.
+func (s *Server) abortConn(ws *websocket.Conn) {
+	s.connsMu.Lock()
+	cancelConn := s.conns[ws]
+	s.connsMu.Unlock()
+	if cancelConn != nil {
+		cancelConn()
 	}
 }
 
@@ -158,8 +351,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.String("node_name", id.NodeName),
 	)
 
+	// The WaitGroup count goes up BEFORE Accept: once Accept hijacks the
+	// connection, net/http stops accounting for this handler entirely, so a
+	// count added afterwards could race Serve's drain wait past a connection
+	// accepted in exactly that instant.
+	s.wg.Add(1)
 	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
+		s.wg.Done()
 		// Accept already wrote the HTTP error for us; log for the operator.
 		s.logger.Warn("websocket upgrade failed",
 			slog.String("remote_addr", r.RemoteAddr),
@@ -167,12 +366,48 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
-	// Read-loop exit closes with whatever status the loop chose; this defer
-	// only catches panics and early returns. CloseNow semantics are fine
-	// there — nothing half-written matters on an abnormal exit.
-	defer ws.Close(websocket.StatusInternalError, "")
+	// Per-connection lifetime. Deliberately NOT a context-tree child of
+	// Serve's ctx: cancelling a parent cancels its children instantly, and a
+	// cancelled Reader ctx makes coder/websocket's timeout loop cut the TCP
+	// connection on the spot — the peer would see a bare EOF instead of the
+	// graceful GoingAway, racing and usually beating shutdown's close. The
+	// ctx is detached instead and cancelled exactly where its lifetime must
+	// end: handler exit here, and shutdown's force-abort of stragglers.
+	// Either way no connection ctx outlives Serve, which is the property
+	// deriving from Serve's ctx exists to guarantee.
+	ctx, cancel := context.WithCancel(context.Background())
 
-	s.serveConn(r.Context(), ws, id)
+	// Registered after a successful Accept so shutdown's snapshot sees every
+	// hijacked-but-still-running connection; serveConn removes it. If
+	// shutdown began in the instant between Accept and this registration,
+	// the snapshot already ran without us — close our own connection and
+	// leave, or the drain wait would hang on a connection nobody will
+	// ever close.
+	if !s.track(ws, cancel) {
+		s.release(ws)
+		ws.CloseNow()
+		return
+	}
+
+	defer func() {
+		// Read-loop exit closes with whatever status the loop chose; this
+		// defer catches panics and plain returns. A cancelled connection
+		// (shutdown abort path) tells the peer GoingAway — a deliberate
+		// server stop, not an internal error.
+		//
+		// Async on purpose: Close blocks until the close handshake resolves,
+		// and if shutdown's own Close is mid-handshake on this connection
+		// the two would serialize into its full internal timeout — gating
+		// handler exit, and therefore the drain wait, on nothing the peer
+		// controls. Nothing here needs the handshake's result.
+		code := websocket.StatusInternalError
+		if ctx.Err() != nil {
+			code = websocket.StatusGoingAway
+		}
+		go ws.Close(code, "")
+	}()
+
+	s.serveConn(ctx, ws, id)
 }
 
 // serveConn reads protobuf Envelopes from one authenticated connection until
@@ -183,6 +418,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // mixed versions and adr:003-wire-protocol forbids lockstep upgrades. A test
 // pins this at the server level (server_test.go), not just at the codec.
 func (s *Server) serveConn(ctx context.Context, ws *websocket.Conn, id tsauth.Identity) {
+	// Removed on exit so the shutdown registry only ever lists connections
+	// whose read loop is actually still running; the paired WaitGroup Done
+	// is what lets Serve's drain wait finish.
+	defer s.release(ws)
+
 	for {
 		typ, frame, err := ws.Reader(ctx)
 		if err != nil {
@@ -234,7 +474,7 @@ func (s *Server) serveConn(ctx context.Context, ws *websocket.Conn, id tsauth.Id
 				slog.String("node_name", id.NodeName),
 				slog.String("reason", err.Error()),
 			)
-			s.reply(ws, &walkiev1.Envelope{
+			s.reply(ctx, ws, &walkiev1.Envelope{
 				Payload: &walkiev1.Envelope_ProtocolError{
 					ProtocolError: &walkiev1.ProtocolError{
 						Code:   walkiev1.ProtocolErrorCode_PROTOCOL_ERROR_CODE_MALFORMED,
@@ -263,7 +503,7 @@ func (s *Server) serveConn(ctx context.Context, ws *websocket.Conn, id tsauth.Id
 func (s *Server) dispatch(ctx context.Context, ws *websocket.Conn, id tsauth.Identity, env *walkiev1.Envelope) bool {
 	switch payload := env.GetPayload().(type) {
 	case *walkiev1.Envelope_Hello:
-		return s.handleHello(ws, id, payload.Hello)
+		return s.handleHello(ctx, ws, id, payload.Hello)
 	default:
 		// Structured, content-free: the payload TYPE name is protocol
 		// metadata, safe to log; message_id identifies without disclosing.
@@ -283,9 +523,9 @@ func (s *Server) dispatch(ctx context.Context, ws *websocket.Conn, id tsauth.Ide
 // so both ends cannot disagree about compatibility). An out-of-range peer gets
 // the structured ProtocolError naming both versions, then the connection
 // closes — there is nothing further two incompatible endpoints can say.
-func (s *Server) handleHello(ws *websocket.Conn, id tsauth.Identity, hello *walkiev1.Hello) bool {
+func (s *Server) handleHello(ctx context.Context, ws *websocket.Conn, id tsauth.Identity, hello *walkiev1.Hello) bool {
 	if !walkiev1.ProtocolVersionSupported(hello.GetProtocolVersion()) {
-		s.reply(ws, &walkiev1.Envelope{
+		s.reply(ctx, ws, &walkiev1.Envelope{
 			Payload: &walkiev1.Envelope_ProtocolError{
 				ProtocolError: walkiev1.NewVersionUnsupportedError(hello.GetProtocolVersion()),
 			},
@@ -311,7 +551,7 @@ func (s *Server) handleHello(ws *websocket.Conn, id tsauth.Identity, hello *walk
 	// sto:offline-queue, which will replace this constant when it lands.
 	// received_at comes from the injected clock — every timestamp this
 	// process writes must be fakeable under test (ts:test-harness).
-	s.reply(ws, &walkiev1.Envelope{
+	s.reply(ctx, ws, &walkiev1.Envelope{
 		Payload: &walkiev1.Envelope_HelloAck{
 			HelloAck: &walkiev1.HelloAck{
 				Device:          device,
@@ -326,11 +566,15 @@ func (s *Server) handleHello(ws *websocket.Conn, id tsauth.Identity, hello *walk
 
 // reply writes one envelope as a binary frame.
 //
+// The write is bounded by ctx, not context.Background(): a reply to a stuck
+// peer must die with the connection's lifetime, or shutdown would block
+// forever inside this write while the grace window expires around it.
+//
 // Coordinator-originated envelopes leave message_id empty on purpose: dedup
 // by ULID exists for REDELIVERED traffic (req:offline-delivery), whose policy
 // belongs to sto:offline-queue. Inventing an ID scheme here would pre-empt
 // that design; request-reply correlation on this connection needs none.
-func (s *Server) reply(ws *websocket.Conn, env *walkiev1.Envelope) {
+func (s *Server) reply(ctx context.Context, ws *websocket.Conn, env *walkiev1.Envelope) {
 	data, err := proto.Marshal(env)
 	if err != nil {
 		// Marshal failure on a structurally valid reply is a programmer
@@ -339,18 +583,20 @@ func (s *Server) reply(ws *websocket.Conn, env *walkiev1.Envelope) {
 		s.logger.Error("reply marshal failed", slog.String("reason", err.Error()))
 		return
 	}
-	if err := ws.Write(context.Background(), websocket.MessageBinary, data); err != nil {
+	if err := ws.Write(ctx, websocket.MessageBinary, data); err != nil {
 		s.logger.Warn("reply write failed", slog.String("reason", err.Error()))
 	}
 }
 
 // isNormalClose reports whether err is just the connection ending: the peer's
-// close frame or our own shutdown cancelling the read. Anything else from the
-// read loop is worth an operator's attention.
+// close frame, our own shutdown cancelling the read, or the transport closing
+// under us — which is exactly what shutdown's registry Close does to unblock
+// Readers. Anything else from the read loop is worth an operator's attention.
 func isNormalClose(err error) bool {
 	return errors.Is(err, io.EOF) ||
 		websocket.CloseStatus(err) != -1 ||
-		errors.Is(err, context.Canceled)
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, net.ErrClosed)
 }
 
 // remoteAddrOf parses an http.Request.RemoteAddr ("ip:port") into the
