@@ -58,7 +58,10 @@ func startServer(t *testing.T, resolver tsauth.Resolver) (addr string, logs *byt
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if err := NewServer(resolver, clk, logger).Serve(ctx, ln); err != nil {
+		// nil tracker: these tests exercise skeleton machinery (identity
+		// gate, handshake, shutdown), not presence — presence_server_test.go
+		// owns the wired-tracker rig.
+		if err := NewServer(resolver, clk, logger, nil).Serve(ctx, ln); err != nil {
 			t.Errorf("Serve: %v", err)
 		}
 	}()
@@ -379,7 +382,7 @@ func TestShutdownClosesLiveConnectionWithinGrace(t *testing.T) {
 
 	ctx, stop := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- NewServer(resolver, clk, logger).Serve(ctx, ln) }()
+	go func() { done <- NewServer(resolver, clk, logger, nil).Serve(ctx, ln) }()
 
 	ws := dialWS(t, context.Background(), resolver, ln.Addr().String())
 
