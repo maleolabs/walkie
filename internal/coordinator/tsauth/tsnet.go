@@ -61,7 +61,11 @@ func (r *TSNetResolver) Resolve(ctx context.Context, remoteAddr net.Addr) (Ident
 		}
 		return Identity{}, fmt.Errorf("tsauth: whois %s: %w", remoteAddr, err)
 	}
-	return identityFromWhoIs(resp), nil
+	id, err := identityFromWhoIs(resp)
+	if err != nil {
+		return Identity{}, fmt.Errorf("tsauth: whois %s: %w", remoteAddr, err)
+	}
+	return id, nil
 }
 
 // identityFromWhoIs maps the daemon's answer onto [Identity].
@@ -69,10 +73,15 @@ func (r *TSNetResolver) Resolve(ctx context.Context, remoteAddr net.Addr) (Ident
 // The pointer fields are tolerated as absent rather than dereferenced blindly:
 // the fleet runs mixed daemon versions, and an answer missing a part must
 // degrade to a thinner identity — never to a panic inside the accept loop.
-func identityFromWhoIs(resp *apitype.WhoIsResponse) Identity {
+//
+// An answer naming NOBODY (nil response, or node and user profile both
+// absent) is an error, not a zero-value pass: admitting an unattributable
+// identity would breach the refuse-on-failure contract of adr:004 — if we
+// cannot confirm WHO, we do not pretend it is nobody-harmful.
+func identityFromWhoIs(resp *apitype.WhoIsResponse) (Identity, error) {
 	var id Identity
 	if resp == nil {
-		return id
+		return id, errors.New("identity unresolved: daemon returned no answer")
 	}
 	if u := resp.UserProfile; u != nil {
 		id.LoginName = u.LoginName
@@ -81,5 +90,8 @@ func identityFromWhoIs(resp *apitype.WhoIsResponse) Identity {
 	if n := resp.Node; n != nil {
 		id.NodeName = n.Name
 	}
-	return id
+	if id == (Identity{}) {
+		return id, errors.New("identity unresolved: answer carries neither node nor user profile")
+	}
+	return id, nil
 }

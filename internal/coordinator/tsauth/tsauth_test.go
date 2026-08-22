@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 
 	apitype "tailscale.com/client/tailscale/apitype"
@@ -19,7 +20,10 @@ func TestIdentityFromWhoIsMapsFields(t *testing.T) {
 		},
 	}
 
-	got := identityFromWhoIs(resp)
+	got, err := identityFromWhoIs(resp)
+	if err != nil {
+		t.Fatalf("identityFromWhoIs: %v", err)
+	}
 	want := Identity{
 		LoginName:   "alice@example.com",
 		DisplayName: "Alice Smith",
@@ -31,20 +35,20 @@ func TestIdentityFromWhoIsMapsFields(t *testing.T) {
 }
 
 // A mixed-version daemon may omit parts of the answer; the mapping must
-// degrade to a thinner identity, never panic inside an accept loop.
+// degrade to a thinner identity, never panic inside an accept loop. An answer
+// naming NOBODY is refused outright — admitting a zero-value identity would
+// breach adr:004's refuse-on-failure contract.
 func TestIdentityFromWhoIsToleratesMissingParts(t *testing.T) {
 	cases := map[string]*apitype.WhoIsResponse{
-		"nil response":     nil,
 		"nil node":         {UserProfile: &tailcfg.UserProfile{LoginName: "alice@example.com"}},
 		"nil user profile": {Node: &tailcfg.Node{Name: "phone.tail-scale.ts.net."}},
 	}
 	for name, resp := range cases {
-		got := identityFromWhoIs(resp) // must not panic
+		got, err := identityFromWhoIs(resp) // must not panic
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
 		switch name {
-		case "nil response":
-			if got != (Identity{}) {
-				t.Errorf("%s: got %+v, want zero Identity", name, got)
-			}
 		case "nil node":
 			if got.LoginName != "alice@example.com" || got.NodeName != "" {
 				t.Errorf("%s: got %+v, want login only", name, got)
@@ -53,6 +57,30 @@ func TestIdentityFromWhoIsToleratesMissingParts(t *testing.T) {
 			if got.NodeName != "phone.tail-scale.ts.net." || got.LoginName != "" {
 				t.Errorf("%s: got %+v, want node only", name, got)
 			}
+		}
+	}
+}
+
+// A non-nil answer that names nobody (no node, no user profile) resolves to
+// nothing and must ERROR like any other unresolved identity: the caller's
+// refusal path is the only correct outcome for an unattributable peer.
+func TestIdentityFromWhoIsRefusesEmptyIdentity(t *testing.T) {
+	cases := map[string]*apitype.WhoIsResponse{
+		"nil response":  nil,
+		"empty answer":  {},
+		"nameless user": {UserProfile: &tailcfg.UserProfile{}},
+	}
+	for name, resp := range cases {
+		got, err := identityFromWhoIs(resp)
+		if err == nil {
+			t.Errorf("%s: resolved %+v without error; want refusal", name, got)
+			continue
+		}
+		if !strings.Contains(err.Error(), "identity unresolved") {
+			t.Errorf("%s: error %q does not name the failure class", name, err)
+		}
+		if got != (Identity{}) {
+			t.Errorf("%s: returned populated identity %+v alongside error", name, got)
 		}
 	}
 }
