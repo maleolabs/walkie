@@ -14,7 +14,21 @@
 # that otherwise stays invisible until a cross-compile fails.
 
 GO     ?= go
-BUF    ?= buf
+
+# buf is pinned as a Go tool dependency (see the `tool` block in go.mod) instead
+# of being expected on PATH. Reproducible codegen is an acceptance criterion of
+# walkie/ts:protocol-schema-v1, and a PATH `buf` is whatever each machine or CI
+# runner happens to have installed — the drift then shows up as a `make
+# proto-check` diff that looks like a schema change and is not one. `go tool buf`
+# resolves to the exact version in go.mod for everyone, and needs no separately
+# installed binary at all.
+#
+# The one cost: buf is a large program, so the first `go tool buf` on a cold Go
+# build cache spends minutes compiling it (about 2 seconds once warm). CI is
+# always cold, so the proto job overrides BUF with a prebuilt binary of the
+# version it reads back out of go.mod — see .github/workflows/ci.yml.
+BUF    ?= $(GO) tool buf
+
 BINDIR ?= bin
 
 .DEFAULT_GOAL := help
