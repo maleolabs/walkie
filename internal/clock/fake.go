@@ -22,6 +22,125 @@ type Fake struct {
 type waiter struct {
 	at time.Time
 	ch chan time.Time
+	// owner is set when this waiter backs a [fakeTimer], nil for the plain
+	// After/Sleep waiters. The back-pointer lets Stop and Reset find and
+	// retire exactly their own entry while all other waiters keep firing.
+	owner *fakeTimer
+}
+
+// fakeTimer is the [*Fake] implementation of [Timer]. All of its state
+// transitions happen under the owning Fake's mutex — the same lock that
+// Advance holds while deciding which waiters are due — so "stopped" and
+// "fired" can never interleave badly: once Advance has claimed a waiter under
+// the lock it marks the owner fired before releasing it, and a racing Stop
+// then correctly reports false instead of pretending to cancel a fire that is
+// already on its way to a buffered channel.
+type fakeTimer struct {
+	f  *Fake
+	ch chan time.Time
+	st timerState
+}
+
+type timerState uint8
+
+const (
+	timerStopped timerState = iota
+	timerPending
+	timerFired
+)
+
+// NewTimer returns a one-shot cancellable timer; see the [Clock] interface for
+// why cancellation exists at all.
+//
+// A non-positive d fires immediately: the fire is written into the buffered
+// channel here, after releasing the lock, matching how Advance delivers its
+// fires outside the lock.
+func (f *Fake) NewTimer(d time.Duration) Timer {
+	t := &fakeTimer{f: f, ch: make(chan time.Time, 1)}
+
+	f.mu.Lock()
+	now := f.now
+	if d <= 0 {
+		t.st = timerFired
+	} else {
+		t.st = timerPending
+		f.waiters = append(f.waiters, &waiter{at: now.Add(d), ch: t.ch, owner: t})
+	}
+	f.mu.Unlock()
+
+	if d <= 0 {
+		t.ch <- now
+	}
+	return t
+}
+
+// C receives the single fire.
+func (t *fakeTimer) C() <-chan time.Time { return t.ch }
+
+// Stop cancels a pending fire. It reports false if the timer already fired or
+// was already stopped — including the window where Advance has claimed the
+// waiter but not yet delivered it, which callers must treat as "may have
+// fired", same contract as *time.Timer.Stop.
+func (t *fakeTimer) Stop() bool {
+	f := t.f
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	switch t.st {
+	case timerPending:
+		t.st = timerStopped
+		f.removeWaiter(t)
+		return true
+	default: // fired or already stopped
+		return false
+	}
+}
+
+// Reset rearms the timer, atomically cancelling any pending fire. Safe on a
+// live timer, unlike *time.Timer.Reset — see the interface comment for why
+// that divergence is deliberate.
+func (t *fakeTimer) Reset(d time.Duration) bool {
+	f := t.f
+	f.mu.Lock()
+
+	wasPending := t.st == timerPending
+	if wasPending {
+		f.removeWaiter(t)
+	}
+	now := f.now
+	if d <= 0 {
+		t.st = timerFired
+	} else {
+		t.st = timerPending
+		f.waiters = append(f.waiters, &waiter{at: now.Add(d), ch: t.ch, owner: t})
+	}
+	f.mu.Unlock()
+
+	if d <= 0 {
+		// Non-blocking on purpose: if a previously committed fire has been
+		// claimed by Advance but not yet delivered, its send is already in
+		// flight to this channel. Dropping the new immediate fire loses
+		// nothing — the receiver still gets exactly one wake-up — whereas a
+		// blocking send would park the caller on a channel only the receiver
+		// can drain, i.e. a scheduling-dependent stall of the kind this
+		// package exists to make impossible.
+		select {
+		case t.ch <- now:
+		default:
+		}
+	}
+	return wasPending
+}
+
+// removeWaiter retires the outstanding waiter belonging to t, if any. Called
+// with f.mu held.
+func (f *Fake) removeWaiter(t *fakeTimer) {
+	for i, w := range f.waiters {
+		if w.owner == t {
+			f.waiters = append(f.waiters[:i], f.waiters[i+1:]...)
+			return
+		}
+	}
 }
 
 // NewFake returns a Fake positioned at start.
@@ -63,6 +182,37 @@ func (f *Fake) After(d time.Duration) <-chan time.Time {
 // test that passes for the wrong reason.
 func (f *Fake) Sleep(d time.Duration) { <-f.After(d) }
 
+// Until returns a channel that receives when the clock has advanced past the
+// absolute time t — the deadline-shaped counterpart to [Fake.After].
+//
+// Why it exists: computing a remaining delay and then waiting for it, as in
+// `Sleep(t.Sub(Now()))`, spans two separate lock acquisitions on the fake. On
+// the fleet simulator's shared clock, the driving test can Advance between
+// those two calls, and the waiter then lands at now+d for a now that no longer
+// holds — not a late fire but a wrongly-placed one. Until registers the
+// absolute deadline atomically under the clock lock, so the fire time is
+// correct no matter when the parking goroutine gets scheduled. Anything with a
+// deadline rather than a duration — presence TTLs, backoff targets, queue
+// retention — wants this shape.
+//
+// Until lives on *Fake rather than on the Clock interface deliberately: the
+// interface stays the minimal set production code needs today, and the three
+// consumer items wire their deadline logic to tests through [*Fake]. If a
+// consumer item ends up needing absolute-deadline parking in production code,
+// promoting it to the interface is the obvious move — not done speculatively.
+func (f *Fake) Until(t time.Time) <-chan time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	ch := make(chan time.Time, 1)
+	if !t.After(f.now) {
+		ch <- f.now
+		return ch
+	}
+	f.waiters = append(f.waiters, &waiter{at: t, ch: ch})
+	return ch
+}
+
 // Advance moves the clock forward by d and fires every waiter that is now due.
 //
 // Waiters are fired after the lock is released, so a fired goroutine may arm a
@@ -78,6 +228,11 @@ func (f *Fake) Advance(d time.Duration) {
 		if w.at.After(now) {
 			kept = append(kept, w)
 		} else {
+			// Claim timer-backed waiters under the lock: from this moment a
+			// racing Stop must report false, because the fire is committed.
+			if w.owner != nil {
+				w.owner.st = timerFired
+			}
 			due = append(due, w)
 		}
 	}
