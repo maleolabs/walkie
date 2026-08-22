@@ -211,6 +211,16 @@ type testClient struct {
 	// waiting for something else (a heartbeat's sync ack); nextEnvelope
 	// serves them before reading further, preserving wire order.
 	pending []*walkiev1.Envelope
+
+	// wireLog records EVERY envelope this connection received, regardless of
+	// which helper consumed it. This is sto:offline-queue criterion 4's
+	// instrument: assertions about "what crossed the wire" must be made
+	// against a complete record of the wire, not against whatever a
+	// nextEnvelope-driven helper happened to pull — a full-replay server bug
+	// hides precisely in the frames nobody asked for. Guarded by wireMu
+	// because the reader goroutine appends while test assertions read.
+	wireMu  sync.Mutex
+	wireLog []*walkiev1.Envelope
 }
 
 // connectDevice dials a fresh device named name over a fresh link, stages its
@@ -279,6 +289,9 @@ func (r *presenceRig) connectDevice(t *testing.T, name string, lastAcked ...uint
 			if proto.Unmarshal(data, &env) != nil {
 				return
 			}
+			c.wireMu.Lock()
+			c.wireLog = append(c.wireLog, &env)
+			c.wireMu.Unlock()
 			c.envs <- &env
 		}
 	}()
@@ -386,6 +399,26 @@ func (c *testClient) assertSilent(t *testing.T) {
 		t.Fatalf("%s: unexpected envelope %T", c.name, env.GetPayload())
 	default:
 	}
+}
+
+// wireDirectMessages snapshots every DirectMessage envelope this connection
+// has received so far, in wire order — the criterion-4 measurement surface.
+//
+// Callers MUST establish causality first (the Hello-probe/awaitHelloAck idiom:
+// dispatch is sequential in the server's read loop, so the probe's ack proves
+// every earlier server-side write has landed). Without that, a snapshot taken
+// mid-drain would undercount frames still in flight and could pass a
+// full-replay implementation that simply had not finished replaying yet.
+func (c *testClient) wireDirectMessages() []*walkiev1.Envelope {
+	c.wireMu.Lock()
+	defer c.wireMu.Unlock()
+	var out []*walkiev1.Envelope
+	for _, env := range c.wireLog {
+		if env.GetDirectMessage() != nil {
+			out = append(out, env)
+		}
+	}
+	return out
 }
 
 // teardown closes the connection politely. Killed connections override this

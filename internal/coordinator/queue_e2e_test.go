@@ -54,6 +54,12 @@ func nextQueuedDelivery(t *testing.T, c *testClient) *walkiev1.Envelope {
 // again — and receives EXACTLY ONE message (position 3), not a replay of the
 // queue. A full-replay resumption would send four DMs across these two
 // reconnects; the tight bound this test asserts is three-plus-one.
+//
+// Criterion 4's identity half is asserted too, not just the count: after each
+// reconnect the connection's complete wire record must hold EXACTLY the
+// expected ULIDs in order — a server that replayed already-acknowledged
+// messages would fail on both count and identity, even though dedup would
+// still make the user's screen look correct.
 func TestOfflineDeliveryResumesByPositionCountedOnWire(t *testing.T) {
 	rig := startPresenceRig(t)
 	wireQueue(t, rig, time.Hour, 64)
@@ -70,11 +76,15 @@ func TestOfflineDeliveryResumesByPositionCountedOnWire(t *testing.T) {
 		t.Fatalf("setup: laptop saw %+v, want phone OFFLINE", got)
 	}
 
-	// Three messages for the offline phone. Dispatch is sequential in the
-	// sender's read loop, so the ack of the follow-up Hello proves all three
-	// holds (and their log lines) have landed.
+	// Three messages for the offline phone, identities kept for the wire
+	// assertions below — criterion 4 counts AND names what crosses. Dispatch
+	// is sequential in the sender's read loop, so the ack of the follow-up
+	// Hello proves all three holds (and their log lines) have landed.
+	var heldIDs []string
 	for _, body := range []string{"held one", "held two", "held three"} {
-		laptop.send(t, directEnvelope(message.NewID(rig.clk.Now()), phoneName, body, rigEpoch))
+		id := message.NewID(rig.clk.Now())
+		heldIDs = append(heldIDs, id)
+		laptop.send(t, directEnvelope(id, phoneName, body, rigEpoch))
 	}
 	laptop.send(t, helloEnvelope(walkiev1.MaxProtocolVersion))
 	laptop.awaitHelloAck(t)
@@ -98,6 +108,17 @@ func TestOfflineDeliveryResumesByPositionCountedOnWire(t *testing.T) {
 	}
 	phone2.assertSilent(t) // the suffix ends where the count said it would
 
+	// Causal close of the measurement window: dispatch is sequential per
+	// connection, so this probe's ack proves every frame the server was ever
+	// going to write for the drain has landed in the wire record. Only now
+	// may the exact-count assertion run — earlier, a slow replay would not
+	// have arrived yet and a full-replay bug could slip the count.
+	phone2.send(t, helloEnvelope(walkiev1.MaxProtocolVersion))
+	phone2.awaitHelloAck(t)
+	assertWireDeliveries(t, phone2, wireDelivery{id: heldIDs[0], position: 1},
+		wireDelivery{id: heldIDs[1], position: 2},
+		wireDelivery{id: heldIDs[2], position: 3})
+
 	// Ack position 2: everything ≤ 2 leaves retention.
 	phone2.send(t, &walkiev1.Envelope{Payload: &walkiev1.Envelope_QueueAck{
 		QueueAck: &walkiev1.QueueAck{AcknowledgedPosition: 2},
@@ -109,7 +130,9 @@ func TestOfflineDeliveryResumesByPositionCountedOnWire(t *testing.T) {
 	// Reconnect #2: same device reports last_acked_position=2. The wire must
 	// carry EXACTLY ONE message — position 3 — after a pending_count of 1.
 	// Criterion 2: each pending message arrives once per reconnect; criterion
-	// 4's bound forbids replaying what was already acknowledged.
+	// 4's bound forbids replaying what was already acknowledged, and the
+	// identity assertion below is what makes a full-replay implementation
+	// FAIL here rather than merely look fine through dedup.
 	phone3 := rig.connectDevice(t, phoneName, 2)
 	if got := phone3.helloAck.GetPendingCount(); got != 1 {
 		t.Fatalf("second reconnect: pending_count = %d, want 1", got)
@@ -121,10 +144,48 @@ func TestOfflineDeliveryResumesByPositionCountedOnWire(t *testing.T) {
 	}
 	phone3.assertSilent(t)
 
+	// Same causal close, then the tight bound: one frame, ONE ulid — the
+	// third message's own, never its already-acked siblings'.
+	phone3.send(t, helloEnvelope(walkiev1.MaxProtocolVersion))
+	phone3.awaitHelloAck(t)
+	assertWireDeliveries(t, phone3, wireDelivery{id: heldIDs[2], position: 3})
+
 	// The held envelopes kept their ingress identity: dedup keys survive.
 	// (Positions are the ONLY field replay adds.)
 	if got := env.GetReceivedAt().AsTime(); !got.Equal(rigEpoch) {
 		t.Errorf("replayed received_at = %v, want original ingress stamp %v", got, rigEpoch)
+	}
+}
+
+// wireDelivery is one expected DirectMessage crossing the wire: the ULID that
+// identifies it (the receiver-side dedup key) and the position the replay
+// stamps it with.
+type wireDelivery struct {
+	id       string
+	position uint64
+}
+
+// assertWireDeliveries fails unless c's complete wire record holds EXACTLY
+// the named direct messages, in order, each under its expected ULID and
+// position. This is criterion 4's measurement made into a helper: count AND
+// identity, off the wire record — not off what the user's display folded.
+func assertWireDeliveries(t *testing.T, c *testClient, want ...wireDelivery) {
+	t.Helper()
+	got := c.wireDirectMessages()
+	if len(got) != len(want) {
+		t.Fatalf("%s: %d direct messages crossed the wire, want exactly %d",
+			c.name, len(got), len(want))
+	}
+	for i, w := range want {
+		env := got[i]
+		if env.GetMessageId() != w.id {
+			t.Fatalf("%s: wire delivery %d has message_id %q, want %q",
+				c.name, i+1, env.GetMessageId(), w.id)
+		}
+		if env.GetPosition() != w.position {
+			t.Fatalf("%s: wire delivery %d (%s) has position %d, want %d",
+				c.name, i+1, w.id, env.GetPosition(), w.position)
+		}
 	}
 }
 
@@ -180,7 +241,19 @@ func TestCapRefusalReachesSenderAndLog(t *testing.T) {
 	}
 
 	// No growth past the cap: the inbox still holds exactly the first
-	// message, proven by what a resume would promise.
+	// message. Counted IN THE STORE, not merely inferred from a resume's
+	// promise — criterion 6 says the coordinator does not grow past the cap,
+	// and the row count is that claim's direct evidence.
+	var inboxRows int
+	if err := rig.st.DB().QueryRow(
+		`SELECT COUNT(*) FROM queue_inbox WHERE recipient = ?`, phoneName,
+	).Scan(&inboxRows); err != nil {
+		t.Fatalf("count inbox rows: %v", err)
+	}
+	if inboxRows != 1 {
+		t.Fatalf("queue_inbox holds %d rows for %s, want exactly 1 (nothing stored past the cap)",
+			inboxRows, phoneName)
+	}
 	phone2 := rig.connectDevice(t, phoneName)
 	if got := phone2.helloAck.GetPendingCount(); got != 1 {
 		t.Fatalf("post-refusal resume: pending_count = %d, want 1 (inbox unchanged)", got)
