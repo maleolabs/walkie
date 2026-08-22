@@ -39,9 +39,10 @@ func newRecordingSink() *recordingSink {
 	}
 }
 
-func (r *recordingSink) Deliver(recipient string, env *walkiev1.Envelope) {
+func (r *recordingSink) Deliver(recipient string, env *walkiev1.Envelope) error {
 	r.recipients <- recipient
 	r.envs <- env
+	return nil // retention always accepted: the double holds everything
 }
 
 // connectAll connects the named devices in order, draining each earlier

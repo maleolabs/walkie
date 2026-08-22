@@ -124,6 +124,13 @@ type presenceRig struct {
 	logs     *bytes.Buffer
 	ln       *pipeListener
 
+	// st and srv are exposed for suites that extend the rig — the offline
+	// queue tests wire a real queue over THIS store (one store per process,
+	// as in production) by assigning srv.offline before any client connects,
+	// when no connection handler exists to race the write.
+	st  *store.Store
+	srv *Server
+
 	nextIP byte
 }
 
@@ -156,14 +163,15 @@ func startPresenceRig(t *testing.T, sink ...OfflineSink) *presenceRig {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	srvDone := make(chan struct{})
+	srv := NewServer(resolver, clk, logger, tr, offline)
 	go func() {
 		defer close(srvDone)
-		if err := NewServer(resolver, clk, logger, tr, offline).Serve(ctx, ln); err != nil {
+		if err := srv.Serve(ctx, ln); err != nil {
 			t.Errorf("Serve: %v", err)
 		}
 	}()
 
-	r := &presenceRig{resolver: resolver, clk: clk, tracker: tr, logs: logs, ln: ln, nextIP: 1}
+	r := &presenceRig{resolver: resolver, clk: clk, tracker: tr, logs: logs, ln: ln, st: st, srv: srv, nextIP: 1}
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -194,6 +202,11 @@ type testClient struct {
 	// model, deliberately kept out of the ordered event stream below.
 	roster []*walkiev1.Envelope
 
+	// helloAck is THIS connection's handshake ack, kept query-only: the
+	// offline-queue tests assert on pending_count without re-plumbing the
+	// handshake loop.
+	helloAck *walkiev1.HelloAck
+
 	// pending holds live events consumed off the wire while a helper was
 	// waiting for something else (a heartbeat's sync ack); nextEnvelope
 	// serves them before reading further, preserving wire order.
@@ -202,7 +215,11 @@ type testClient struct {
 
 // connectDevice dials a fresh device named name over a fresh link, stages its
 // tailnet identity, completes Hello/HelloAck, and leaves its reader running.
-func (r *presenceRig) connectDevice(t *testing.T, name string) *testClient {
+//
+// The optional lastAcked becomes Hello.last_acked_position — the offline
+// queue's resume input (sto:offline-queue). Absent, it is zero: "I have
+// nothing yet".
+func (r *presenceRig) connectDevice(t *testing.T, name string, lastAcked ...uint64) *testClient {
 	t.Helper()
 
 	ip := r.nextIP
@@ -267,10 +284,15 @@ func (r *presenceRig) connectDevice(t *testing.T, name string) *testClient {
 	}()
 
 	// Handshake. Everything before the ack is the roster snapshot.
-	c.send(t, helloEnvelope(walkiev1.MaxProtocolVersion))
+	hello := helloEnvelope(walkiev1.MaxProtocolVersion)
+	if len(lastAcked) > 0 {
+		hello.GetHello().LastAckedPosition = lastAcked[0]
+	}
+	c.send(t, hello)
 	for {
 		env := c.recvRaw(t)
 		if env.GetHelloAck() != nil {
+			c.helloAck = env.GetHelloAck()
 			break
 		}
 		c.roster = append(c.roster, env)

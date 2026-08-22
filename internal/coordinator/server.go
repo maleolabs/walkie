@@ -18,6 +18,7 @@ import (
 
 	"github.com/maleolabs/walkie/internal/clock"
 	"github.com/maleolabs/walkie/internal/coordinator/presence"
+	"github.com/maleolabs/walkie/internal/coordinator/queue"
 	"github.com/maleolabs/walkie/internal/coordinator/tsauth"
 	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
 )
@@ -639,6 +640,9 @@ func (s *Server) dispatch(ctx context.Context, out *connWriter, id tsauth.Identi
 	case *walkiev1.Envelope_BroadcastMessage:
 		return s.handleBroadcast(ctx, out, id, env, payload.BroadcastMessage)
 
+	case *walkiev1.Envelope_QueueAck:
+		return s.handleQueueAck(id, payload.QueueAck)
+
 	default:
 		// Structured, content-free: the payload TYPE name is protocol
 		// metadata, safe to log; message_id identifies without disclosing.
@@ -688,13 +692,28 @@ func (s *Server) handleStatusChange(ctx context.Context, out *connWriter, id tsa
 	return true
 }
 
-// handleHello answers the handshake.
+// handleHello answers the handshake and drains the offline queue.
 //
 // The version gate is real but minimal: walkiev1 owns the range and the
 // refusal shape (ts:protocol-schema-v1 placed them beside the generated code
 // so both ends cannot disagree about compatibility). An out-of-range peer gets
 // the structured ProtocolError naming both versions, then the connection
 // closes — there is nothing further two incompatible endpoints can say.
+//
+// # Queue resumption (sto:offline-queue)
+//
+// Hello.last_acked_position is the resume input. When the wired offline sink
+// also implements [QueueDrain], the HelloAck carries the real pending_count —
+// "how many queued messages are about to be delivered, so the client can tell
+// the user rather than appearing to hang" — and the queued envelopes follow
+// it immediately, oldest position first, each stamped with its per-recipient
+// position for the client's later QueueAck. Resumption transfers ONLY the
+// unacked suffix, never a full replay (req:offline-delivery); slice 2's
+// acceptance measurement counts these frames on the wire.
+//
+// Ordering is load-bearing: HelloAck first (its pending_count describes what
+// follows), then the replay frames. A client that acks during the drain can
+// only reference positions it has actually seen.
 func (s *Server) handleHello(ctx context.Context, out *connWriter, id tsauth.Identity, hello *walkiev1.Hello) bool {
 	if !walkiev1.ProtocolVersionSupported(hello.GetProtocolVersion()) {
 		out.write(ctx, &walkiev1.Envelope{
@@ -720,8 +739,33 @@ func (s *Server) handleHello(ctx context.Context, out *connWriter, id tsauth.Ide
 		device = id.LoginName
 	}
 
-	// pending_count is honestly zero: queue drain belongs to
-	// sto:offline-queue, which will replace this constant when it lands.
+	// Queue resumption inputs. With no drain-capable sink wired, both stay
+	// zero-valued: pending_count 0 is then the honest answer, not a stub.
+	//
+	// pending_count is derived from what Resume actually returned rather
+	// than from a separate count query: the ack must never promise more or
+	// less than the frames that follow it, and one source of truth cannot
+	// disagree with itself.
+	var deliveries []queue.Delivery
+	if drain, ok := s.offline.(QueueDrain); ok {
+		lastAcked := hello.GetLastAckedPosition()
+		got, err := drain.Resume(device, lastAcked)
+		if err != nil {
+			// Resume failed but the connection need not die: deliver an
+			// honest empty suffix this round. At-least-once semantics mean
+			// the NEXT reconnect retries the whole unacked suffix; nothing
+			// is lost, because acking happens only after durable processing.
+			s.logger.Error("queue resume failed",
+				slog.String("device", device),
+				slog.Uint64("last_acked_position", lastAcked),
+				slog.String("reason", err.Error()),
+			)
+			got = nil
+		}
+		deliveries = got
+	}
+	pending := uint64(len(deliveries))
+
 	// received_at comes from the injected clock — every timestamp this
 	// process writes must be fakeable under test (ts:test-harness).
 	out.write(ctx, &walkiev1.Envelope{
@@ -729,11 +773,60 @@ func (s *Server) handleHello(ctx context.Context, out *connWriter, id tsauth.Ide
 			HelloAck: &walkiev1.HelloAck{
 				Device:          device,
 				ReceivedAt:      timestamppb.New(s.clk.Now()),
-				PendingCount:    0,
+				PendingCount:    pending,
 				ProtocolVersion: walkiev1.MaxProtocolVersion,
 			},
 		},
 	})
+
+	// The promised suffix, oldest first. Frames carry their positions; the
+	// client acks only after durably processing them (QueueAck field doc).
+	for _, d := range deliveries {
+		out.write(ctx, d.Envelope)
+	}
+	if len(deliveries) > 0 {
+		s.logger.Info("offline queue drained",
+			slog.String("device", device),
+			slog.Int("messages", len(deliveries)),
+			slog.Uint64("first_position", deliveries[0].Position),
+			slog.Uint64("last_position", deliveries[len(deliveries)-1].Position),
+		)
+	}
+	return true
+}
+
+// handleQueueAck advances the offline queue's high-water mark for this
+// device. Everything ≤ the acknowledged position was durably processed by
+// the client and leaves retention now; the next resume starts after it.
+//
+// Success answers with NOTHING — an ack-of-ack would be a third copy of
+// state both ends hold, and at-least-once delivery makes a lost ack
+// harmless: the worst case is a redelivery the receiver dedups by ULID.
+// A stale LOW position is absorbed by the queue's monotonic cursor, not an
+// error. With no drain-capable sink wired, the frame is ignored (the same
+// log-and-continue every unknown-today payload gets) rather than rejected:
+// mixed-fleet clients may speak ahead of their coordinator.
+func (s *Server) handleQueueAck(id tsauth.Identity, ack *walkiev1.QueueAck) bool {
+	drain, ok := s.offline.(QueueDrain)
+	if !ok {
+		return true
+	}
+	device := deviceOf(id)
+	if err := drain.Ack(device, ack.GetAcknowledgedPosition()); err != nil {
+		// Non-fatal by design: the ack will be re-sent or superseded on the
+		// next reconnect, and redelivery is safe. Losing an ack must never
+		// cost the connection.
+		s.logger.Error("queue ack failed",
+			slog.String("device", device),
+			slog.Uint64("acknowledged_position", ack.GetAcknowledgedPosition()),
+			slog.String("reason", err.Error()),
+		)
+		return true
+	}
+	s.logger.Info("offline queue acknowledged",
+		slog.String("device", device),
+		slog.Uint64("acknowledged_position", ack.GetAcknowledgedPosition()),
+	)
 	return true
 }
 

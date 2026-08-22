@@ -28,6 +28,9 @@
 //	                        (default "<WALKIE_STATE_DIR>/coordinator.db")
 //	WALKIE_CONTROL_PORT     control-plane port (default "443")
 //	WALKIE_PRESENCE_TTL     liveness TTL for presence (default "45s")
+//	WALKIE_QUEUE_TTL        offline-queue retention per message (default "72h")
+//	WALKIE_QUEUE_MAX_SIZE   offline-queue cap, messages per recipient
+//	                        (default "256")
 //
 // The auth key arrives via environment rather than flag deliberately: argv is
 // world-readable through ps and shell history, and this process has no other
@@ -45,6 +48,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -53,6 +57,7 @@ import (
 	"github.com/maleolabs/walkie/internal/clock"
 	"github.com/maleolabs/walkie/internal/coordinator"
 	"github.com/maleolabs/walkie/internal/coordinator/presence"
+	"github.com/maleolabs/walkie/internal/coordinator/queue"
 	"github.com/maleolabs/walkie/internal/coordinator/tsauth"
 	"github.com/maleolabs/walkie/internal/store"
 )
@@ -63,6 +68,16 @@ var version = "dev"
 // defaultPresenceTTL backs WALKIE_PRESENCE_TTL; see loadConfig for the
 // reasoning and why it is provisional.
 const defaultPresenceTTL = 45 * time.Second
+
+// Offline-queue retention defaults (sto:offline-queue), both provisional and
+// env-overridable like the presence TTL. 72h covers a long weekend offline;
+// 256 messages per recipient bounds one chatty peer without making the cap a
+// daily event at human messaging rates. Both are bounded-retention knobs, not
+// performance tuning — req:offline-delivery requires that they EXIST.
+const (
+	defaultQueueTTL     = 72 * time.Hour
+	defaultQueueMaxSize = 256
+)
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version, then exit")
@@ -114,6 +129,18 @@ func run(logger *slog.Logger) error {
 	}
 	defer tracker.Close()
 
+	// The offline queue (sto:offline-queue): bounded retention over the same
+	// store, wired as the server's OfflineSink. From here on, a message for
+	// an offline device is HELD — with a TTL, a size cap that refuses
+	// explicitly, and survival across this process's restarts — instead of
+	// the skeleton's loud drop. Registered AFTER the tracker's defer so
+	// Close order runs tracker-then-queue-then-store.
+	inbox, err := queue.New(st, clock.Real(), cfg.queueTTL, cfg.queueMaxSize, logger)
+	if err != nil {
+		return fmt.Errorf("start offline queue: %w", err)
+	}
+	defer inbox.Close()
+
 	// Criterion 1, production path: this process IS a tailnet node. tsnet
 	// brings its own WireGuard, DERP fallback and node identity inside the
 	// container — no host networking, no Tailscale sidecar (adr:001). The
@@ -157,11 +184,10 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// The nil OfflineSink is today's honest shape: messages for offline
-	// devices are dropped with a loud log line, because nothing here may
-	// pretend to retain them. sto:offline-queue replaces the nil when it
-	// lands (see OfflineSink in internal/coordinator/routing.go).
-	coord := coordinator.NewServer(resolver, clock.Real(), logger, tracker, nil)
+	// The queue is the OfflineSink: holds for offline devices, drains on
+	// Hello with the client's last_acked_position, refuses at the size cap
+	// (see OfflineSink and QueueDrain in internal/coordinator/routing.go).
+	coord := coordinator.NewServer(resolver, clock.Real(), logger, tracker, inbox)
 	if err := coord.Serve(ctx, ln); err != nil {
 		// The drain can genuinely fail: a peer that ignores close frames
 		// outlives the grace window. Saying "shutdown complete" then would
@@ -183,12 +209,14 @@ func run(logger *slog.Logger) error {
 // config is the process's entire configuration surface; see the package
 // comment for the environment variables and their defaults.
 type config struct {
-	authKey     string
-	hostname    string
-	stateDir    string
-	storePath   string
-	controlPort string
-	presenceTTL time.Duration
+	authKey      string
+	hostname     string
+	stateDir     string
+	storePath    string
+	controlPort  string
+	presenceTTL  time.Duration
+	queueTTL     time.Duration
+	queueMaxSize int
 }
 
 // loadConfig reads the environment into [config].
@@ -230,13 +258,35 @@ func loadConfig() (*config, error) {
 		ttl = d
 	}
 
+	// Offline-queue retention knobs (sto:offline-queue). Same provisional
+	// posture as the presence TTL: bounded by construction, tuned by
+	// operators, never unbounded by omission.
+	queueTTL := defaultQueueTTL
+	if v := os.Getenv("WALKIE_QUEUE_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("parse WALKIE_QUEUE_TTL %q: %w", v, err)
+		}
+		queueTTL = d
+	}
+	queueMaxSize := defaultQueueMaxSize
+	if v := os.Getenv("WALKIE_QUEUE_MAX_SIZE"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("parse WALKIE_QUEUE_MAX_SIZE %q: want a positive integer", v)
+		}
+		queueMaxSize = n
+	}
+
 	return &config{
-		authKey:     os.Getenv("WALKIE_TAILNET_AUTHKEY"),
-		hostname:    envOr("WALKIE_HOSTNAME", "walkie-coordinator"),
-		stateDir:    stateDir,
-		storePath:   storePath,
-		controlPort: port,
-		presenceTTL: ttl,
+		authKey:      os.Getenv("WALKIE_TAILNET_AUTHKEY"),
+		hostname:     envOr("WALKIE_HOSTNAME", "walkie-coordinator"),
+		stateDir:     stateDir,
+		storePath:    storePath,
+		controlPort:  port,
+		presenceTTL:  ttl,
+		queueTTL:     queueTTL,
+		queueMaxSize: queueMaxSize,
 	}, nil
 }
 
