@@ -6,12 +6,17 @@
 //	eka view execution
 //
 // Assembly order for the text half (sto:text-messaging), recorded where the
-// wiring will land so it is not re-derived later: a control connection
-// (internal/control, ts:reconnect-resume) feeds every received envelope to a
-// messagehub.Hub's Apply, and writes whatever Hub.SendDirect/SendBroadcast
-// return; rendering reads Hub.Conversation snapshots and Apply's display
-// verdict (sto:terminal-ui). The seam already exists and is proven end-to-end
-// against the real coordinator in internal/coordinator's messaging suite.
+// wiring will land so it is not re-derived later: a control.Client
+// (internal/control, ts:reconnect-resume — dialing, Hello/HelloAck with
+// last_acked_position, watchdog, jittered retry loop) feeds every received
+// envelope to a messagehub.Hub's Apply via OnEnvelope; outgoing Hub envelopes
+// go through Client.Send; queue deliveries are acknowledged through
+// Client.Acknowledge once durably processed; connection state for rendering
+// comes from Client.Machine().Subscribe plus Client.State/ConnectedAs.
+// Rendering reads Hub.Conversation snapshots and Apply's display verdict
+// (sto:terminal-ui). The seam already exists and is proven end-to-end
+// against the real coordinator in internal/coordinator's messaging suite and
+// internal/control's WebSocket e2e suite.
 //
 // The one thing this binary does today is report which build variant it is,
 // which matters because a fleet running two variants needs a way to tell them

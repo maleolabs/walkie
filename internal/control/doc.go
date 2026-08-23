@@ -35,6 +35,35 @@
 // deciding whether to rely on this tool in an emergency needs to know whether it
 // is actually connected.
 //
+// The machine is explicit — [Machine] holds one named [State] behind a legal-
+// transition table ([State] lists every edge and why it exists). An illegal
+// transition panics at the call site; a same-state transition is a no-op.
+// Consumers subscribe with [Machine.Subscribe] and receive EVERY change in
+// order: criterion 6's "at all times" is delivered as an event stream that
+// cannot drop, plus [Machine.State] for the initial render.
+//
+// # What this package owns
+//
+// The whole control-plane connection lives here now. The core: the state
+// machine, the full-jitter backoff schedule ([Backoff]), and the dead-peer
+// watchdog ([Watchdog]) that sends application-level Heartbeats and declares
+// the peer dead when inbound traffic stops for Config.DeadPeerInterval. The
+// wire half: [Client], the reconnect supervisor that dials ([DialFunc]),
+// performs the Hello/HelloAck handshake carrying Hello.last_acked_position
+// (criterion 4's resume input), runs the read loop that feeds
+// [Watchdog.Activity] from every inbound frame, re-arms the backoff between
+// attempts on clock.Clock, and resets the attempt counter on reaching online.
+// Every interval comes from [Config]; no literal duration appears in any
+// logic path.
+//
+// The production transport is the WebSocket ([WebSocketDialer]); tests
+// substitute framed sessions over internal/testnet links onto the same seam,
+// which is what keeps twenty simulated clients cheap enough to assert on.
+//
+// Nothing in this package may grow a dependency on the data plane:
+// arc:system-overview gives the data plane its own keepalive and its own
+// lifetime precisely so a control-plane reconnect cannot tear down a call.
+//
 // # Testing
 //
 // All of the above is verified through the injectable network and clock in

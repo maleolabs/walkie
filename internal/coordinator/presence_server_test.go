@@ -354,10 +354,12 @@ func (c *testClient) send(t *testing.T, env *walkiev1.Envelope) {
 }
 
 // heartbeat sends a Heartbeat and then a second Hello, waiting for THAT ack.
-// Heartbeats are answered with silence by design, so the follow-up Hello is
-// the synchronization: dispatch is sequential in the server's read loop, so
-// the second ack proves the heartbeat was already dispatched — without this,
-// a clock advance could race an unprocessed heartbeat back to life.
+// (Since ts:reconnect-resume the coordinator answers a Heartbeat with a
+// Heartbeat echo — the pong half of the application-level heartbeat — so
+// awaitHelloAck parks that echo in pending; the follow-up Hello remains the
+// synchronization: dispatch is sequential in the server's read loop, so the
+// second ack proves the heartbeat was already dispatched — without this, a
+// clock advance could race an unprocessed heartbeat back to life.)
 func (c *testClient) heartbeat(t *testing.T) {
 	t.Helper()
 	c.send(t, &walkiev1.Envelope{Payload: &walkiev1.Envelope_Heartbeat{Heartbeat: &walkiev1.Heartbeat{}}})
