@@ -2,7 +2,6 @@ package coordinator
 
 import (
 	"bytes"
-	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -12,6 +11,7 @@ import (
 	"github.com/maleolabs/walkie/internal/crypto"
 	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
 	"github.com/maleolabs/walkie/internal/message"
+	"github.com/maleolabs/walkie/internal/messagehub"
 )
 
 // The tests in this file drive ts:queue-sealed-box END-TO-END through the
@@ -261,39 +261,12 @@ func TestChangedKeyConfirmedRepins(t *testing.T) {
 	}
 }
 
-// sealedRigAtRest is the queue seam wired the way production will seal: look
-// the recipient's key up in the coordinator's OWN keystore — public keys
-// only, which is structural (the keystore API has no way to hold anything
-// else) — and seal with the audited primitive. The open half uses identities
-// the TEST holds on behalf of recipients: that operation is the recipient's
-// client's, hosted here only because the drain contract still demands
-// decoded envelopes (queue.AtRest documents the one open dependency).
-type sealedRigAtRest struct {
-	ks    *crypto.Keystore
-	holds map[string]*crypto.IdentityKey
-}
-
-func (a *sealedRigAtRest) Seal(recipient string, marshalled []byte) ([]byte, error) {
-	pub, ok := a.ks.PinnedKey(recipient)
-	if !ok {
-		return nil, errors.New("no pinned key for recipient")
-	}
-	return crypto.Seal(pub, marshalled)
-}
-
-func (a *sealedRigAtRest) Open(recipient string, stored []byte) ([]byte, error) {
-	id, ok := a.holds[recipient]
-	if !ok {
-		return nil, errors.New("recipient identity not held")
-	}
-	return crypto.Open(id, stored)
-}
-
-// wireSealedQueue builds a sealed queue over the rig's store, wired as the
-// server's offline sink before any client connects.
-func wireSealedQueue(t *testing.T, rig *presenceRig, ks *crypto.Keystore, holds map[string]*crypto.IdentityKey) *queue.Queue {
+// wireSealedQueue builds a SEALED queue over the rig's store — through the
+// production sealer (queue.NewKeystoreSealer over the rig's own keystore) —
+// wired as the server's offline sink before any client connects.
+func wireSealedQueue(t *testing.T, rig *presenceRig, ks *crypto.Keystore) *queue.Queue {
 	t.Helper()
-	q, err := queue.NewSealed(rig.st, rig.clk, time.Hour, 64, slog.New(slog.NewTextHandler(rig.logs, nil)), &sealedRigAtRest{ks: ks, holds: holds})
+	q, err := queue.NewSealed(rig.st, rig.clk, time.Hour, 64, slog.New(slog.NewTextHandler(rig.logs, nil)), queue.NewKeystoreSealer(ks, slog.New(slog.NewTextHandler(rig.logs, nil))))
 	if err != nil {
 		t.Fatalf("wire sealed queue: %v", err)
 	}
@@ -302,23 +275,52 @@ func wireSealedQueue(t *testing.T, rig *presenceRig, ks *crypto.Keystore, holds 
 	return q
 }
 
+// identityHub builds the recipient-side seam with its device key wired: what
+// the assembled client will run on every inbound envelope (OnEnvelope →
+// Apply → ack). The hub plays the recipient in these tests because the
+// interactive client is not assembled yet; the operations are exactly its.
+// Its logger writes into the RIG's buffer, because the loud-drop lines
+// criterion 4 demands are client-side now — they must land where the tests
+// (and an operator) read them.
+func identityHub(t *testing.T, rig *presenceRig, name string, id *crypto.IdentityKey) *messagehub.Hub {
+	t.Helper()
+	hub := messagehub.New(name, rig.clk, slog.New(slog.NewTextHandler(rig.logs, nil)))
+	hub.UseIdentity(id)
+	return hub
+}
+
+// nextSealedDelivery returns the next SealedDelivery frame, skipping the one
+// asynchronous frame kind that legitimately interleaves (PresenceUpdates).
+// Anything else means the test's model of the drain is wrong and it says so.
+func nextSealedDelivery(t *testing.T, c *testClient) *walkiev1.Envelope {
+	t.Helper()
+	for {
+		env := c.nextEnvelope(t)
+		if env.GetPresenceUpdate() != nil {
+			continue
+		}
+		if sd := env.GetSealedDelivery(); sd != nil {
+			return env
+		}
+		t.Fatalf("%s: expected SealedDelivery, got %T", c.name, env.GetPayload())
+	}
+}
+
 // TestSealedQueueEndToEndOfflineDelivery is the item's headline flow end to
-// end through the real server: A sends to offline B; the ROW in the
-// coordinator's database is ciphertext (asserted at the byte level); B
-// reconnects and gets the original message back intact.
-//
-// The decrypt step here rides the drain contract's open half (the recipient's
-// key operation, hosted coordinator-side until the schema grows a
-// sealed-delivery carrier — see queue.AtRest). Everything before that point —
-// pinning, sealing, storage, bytes at rest — is exactly the production path.
+// end through the real server, on the FLIPPED production wiring: A sends to
+// offline B; the ROW in the coordinator's database is ciphertext (asserted at
+// the byte level); B reconnects and receives an opaque SealedDelivery frame;
+// B's client opens it with its OWN identity key and files the original
+// message intact. The coordinator never holds plaintext on any step of this
+// path after ingress.
 func TestSealedQueueEndToEndOfflineDelivery(t *testing.T) {
 	rig := startPresenceRig(t)
 	ks := mustKeystore(t, rig)
 
 	phoneID := mustIdentity(t)
-	holds := map[string]*crypto.IdentityKey{phoneName: phoneID}
 	wireKeys(t, rig, ks, nil)
-	wireSealedQueue(t, rig, ks, holds)
+	wireSealedQueue(t, rig, ks)
+	phoneHub := identityHub(t, rig, phoneName, phoneID)
 
 	// B comes online just long enough to publish its key, then dies.
 	phone := rig.connectDevice(t, phoneName)
@@ -340,9 +342,10 @@ func TestSealedQueueEndToEndOfflineDelivery(t *testing.T) {
 		t.Fatalf("message not held; log:\n%s", out)
 	}
 
-	// CRITERION 3, at the byte level: read the row straight out of the
-	// database. No plaintext anywhere in it, and it carries the sealed-box
-	// version byte. A round-trip assertion cannot say this; raw bytes can.
+	// CRITERION 3, at the byte level, against the PRODUCTION wiring: read
+	// the row straight out of the database. No plaintext anywhere in it, and
+	// it carries the framed sealed-box shape (marker 0x01, version byte
+	// 0x01). A round-trip assertion cannot say this; raw bytes can.
 	var body []byte
 	if err := rig.st.DB().QueryRow(
 		`SELECT body FROM queue_inbox WHERE recipient = ?`, phoneName,
@@ -353,32 +356,36 @@ func TestSealedQueueEndToEndOfflineDelivery(t *testing.T) {
 		bytes.Contains(body, []byte(id)) {
 		t.Fatal("stored queue row CONTAINS plaintext — criterion 3 violated")
 	}
-	if len(body) < 1+32+24+16 || body[0] != 0x01 {
-		t.Fatalf("stored row does not match sealed-box wire shape (version=%#x len=%d)", body[0], len(body))
+	if len(body) < 1+1+32+24+16 || body[0] != 0x01 || body[1] != 0x01 {
+		t.Fatalf("stored row does not match the framed sealed-box shape (marker=%#x version=%#x len=%d)", body[0], body[1], len(body))
 	}
 
-	// B reconnects: exactly one delivery, and it is the ORIGINAL message —
-	// same ULID, same sender attribution, same ingress received_at, same
-	// body — opened with B's identity key and position-stamped 1.
-	// (handleHello's order is HelloAck, then the promised deliveries, then
-	// the key-directory snapshot — so the very next frame here is the DM.)
+	// B reconnects: exactly one delivery, and it is a SEALED frame — the
+	// coordinator ships the box it cannot open. (handleHello's order is
+	// HelloAck, then the promised deliveries, then the key-directory
+	// snapshot.)
 	phone2 := rig.connectDevice(t, phoneName)
 	if got := phone2.helloAck.GetPendingCount(); got != 1 {
 		t.Fatalf("pending_count = %d, want 1", got)
 	}
-	env := phone2.nextEnvelope(t)
-	dm := env.GetDirectMessage()
-	if dm == nil {
-		t.Fatalf("expected queued DirectMessage, got %T", env.GetPayload())
+	frame := nextSealedDelivery(t, phone2)
+	if frame.GetPosition() != 1 {
+		t.Fatalf("delivery position = %d, want 1 (the ack handle rides outside the box)", frame.GetPosition())
 	}
-	if dm.GetBody() != "sealed secret payload" || dm.GetSender() != laptopName || env.GetMessageId() != id {
-		t.Fatalf("decrypted delivery drifted: id=%q sender=%q body=%q", env.GetMessageId(), dm.GetSender(), dm.GetBody())
+
+	// THE RECIPIENT'S CLIENT OPENS IT: same call the assembled client makes
+	// from OnEnvelope. The inner envelope must be the ORIGINAL message —
+	// same ULID, same sender attribution, same ingress received_at, same
+	// body.
+	msg, displayed := phoneHub.Apply(frame)
+	if !displayed {
+		t.Fatal("recipient's hub refused a box addressed to its own key")
 	}
-	if env.GetPosition() != 1 {
-		t.Fatalf("delivery position = %d, want 1", env.GetPosition())
+	if msg.ID != id || msg.Sender != laptopName || msg.Body != "sealed secret payload" {
+		t.Fatalf("decrypted delivery drifted: %+v", msg)
 	}
-	if !env.GetReceivedAt().AsTime().Equal(rigEpoch) {
-		t.Fatalf("received_at rewritten across seal/open: %v", env.GetReceivedAt().AsTime())
+	if !msg.ReceivedAt.Equal(rigEpoch) {
+		t.Fatalf("received_at rewritten across seal/open: %v", msg.ReceivedAt)
 	}
 
 	// Ack closes the loop: retention drops the row. The probe Hello's ack
@@ -401,6 +408,96 @@ func TestSealedQueueEndToEndOfflineDelivery(t *testing.T) {
 	}
 }
 
+// TestTamperedRowDropsLoudlyAtRecipient is criterion 4 across the flipped
+// boundary, end to end: a stored row tampered with WHILE the recipient is
+// offline crosses as a SealedDelivery frame carrying the damaged box, fails
+// authentication in the recipient's client, files NOTHING, and the loud drop
+// is logged content-free — while the healthy sibling message still delivers
+// and displays.
+func TestTamperedRowDropsLoudlyAtRecipient(t *testing.T) {
+	rig := startPresenceRig(t)
+	ks := mustKeystore(t, rig)
+
+	phoneID := mustIdentity(t)
+	wireKeys(t, rig, ks, nil)
+	wireSealedQueue(t, rig, ks)
+	phoneHub := identityHub(t, rig, phoneName, phoneID)
+
+	phone := rig.connectDevice(t, phoneName)
+	nextDirectory(t, phone)
+	phone.send(t, announceEnvelope(phoneID.PublicKey()))
+	nextDirectory(t, phone)
+	phone.teardown(t)
+
+	laptop := rig.connectDevice(t, laptopName)
+	nextDirectory(t, laptop)
+
+	// Two messages held: the middle one will be corrupted at rest.
+	laptop.send(t, directEnvelope(message.NewID(rig.clk.Now()), phoneName, "first intact", rigEpoch))
+	badID := message.NewID(rig.clk.Now())
+	laptop.send(t, directEnvelope(badID, phoneName, "second tampered", rigEpoch))
+	laptop.send(t, helloEnvelope(walkiev1.MaxProtocolVersion))
+	laptop.awaitHelloAck(t)
+
+	// Hostile edit at rest: flip one bit inside the middle row's ciphertext,
+	// directly in the database.
+	var body []byte
+	if err := rig.st.DB().QueryRow(
+		`SELECT body FROM queue_inbox WHERE recipient = ? AND position = 2`, phoneName,
+	).Scan(&body); err != nil {
+		t.Fatalf("read queued row: %v", err)
+	}
+	tampered := append([]byte(nil), body...)
+	tampered[len(tampered)-1] ^= 0x01
+	if _, err := rig.st.DB().Exec(
+		`UPDATE queue_inbox SET body = ? WHERE recipient = ? AND position = 2`,
+		tampered, phoneName,
+	); err != nil {
+		t.Fatalf("tamper stored row: %v", err)
+	}
+
+	// B reconnects: BOTH frames ship (the coordinator cannot tell which box
+	// is dead), position 1 first.
+	phone2 := rig.connectDevice(t, phoneName)
+	if got := phone2.helloAck.GetPendingCount(); got != 2 {
+		t.Fatalf("pending_count = %d, want 2", got)
+	}
+	good := nextSealedDelivery(t, phone2)
+	if good.GetPosition() != 1 {
+		t.Fatalf("first delivery position = %d, want 1", good.GetPosition())
+	}
+	bad := nextSealedDelivery(t, phone2)
+	if bad.GetPosition() != 2 {
+		t.Fatalf("second delivery position = %d, want 2", bad.GetPosition())
+	}
+
+	// The healthy box opens and files; the tampered box drops WHOLE — no
+	// partial content, nothing filed under the tampered ULID.
+	msg, displayed := phoneHub.Apply(good)
+	if !displayed || msg.Body != "first intact" {
+		t.Fatalf("healthy delivery drifted: %+v displayed=%v", msg, displayed)
+	}
+	msg, displayed = phoneHub.Apply(bad)
+	if displayed || msg != (message.Message{}) {
+		t.Fatalf("tampered box produced output %+v — must drop whole", msg)
+	}
+	if filed := phoneHub.Conversation(message.ConversationKey(laptopName)); len(filed) != 1 {
+		t.Fatalf("conversation holds %d messages, want exactly the healthy one", len(filed))
+	}
+
+	// Loud, content-free: the drop names the position and reason class,
+	// never the body, never bytes.
+	laptop.send(t, helloEnvelope(walkiev1.MaxProtocolVersion))
+	laptop.awaitHelloAck(t)
+	out := rig.logs.String()
+	if !strings.Contains(out, "UNREADABLE") {
+		t.Fatalf("tampered-row drop not logged loudly; log:\n%s", out)
+	}
+	if strings.Contains(out, "second tampered") {
+		t.Fatalf("log carries message BODY — no-content rule violated; log:\n%s", out)
+	}
+}
+
 // TestLiveTrafficStaysPlaintext is the scope guard, verified on the wire:
 // with the sealed queue AND keystore fully wired, a direct message between
 // two ONLINE devices crosses exactly as sent — adr:004 keeps live traffic on
@@ -412,9 +509,8 @@ func TestSealedQueueEndToEndOfflineDelivery(t *testing.T) {
 func TestLiveTrafficStaysPlaintext(t *testing.T) {
 	rig := startPresenceRig(t)
 	ks := mustKeystore(t, rig)
-	phoneID := mustIdentity(t)
 	wireKeys(t, rig, ks, nil)
-	wireSealedQueue(t, rig, ks, map[string]*crypto.IdentityKey{phoneName: phoneID})
+	wireSealedQueue(t, rig, ks)
 
 	laptop := rig.connectDevice(t, laptopName)
 	nextDirectory(t, laptop)
