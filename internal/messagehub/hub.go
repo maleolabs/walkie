@@ -28,8 +28,23 @@
 //   - [Hub.Apply] folds one received envelope into the log through
 //     [message.Log.Append], which is where dedup-by-ULID sits: at the display
 //     decision, not at the socket (criterion 3). Its bool is the display
-//     verdict — false means "already shown", wherever the duplicate came from.
+//     verdict — false means "already shown", wherever the duplicate came
+//     from. Sealed queue deliveries (ts:queue-sealed-box) come through here
+//     too: with an identity wired ([Hub.UseIdentity]) Apply opens the box
+//     with this device's key and folds the INNER envelope in exactly as if
+//     it had arrived live; a box that fails authentication is dropped WHOLE
+//     with a loud, content-free error — AEAD failure means there is no
+//     partial plaintext to act on, and acting on none is the only honest
+//     outcome.
 //   - [Hub.Conversation] / [Hub.Conversations] expose the log's query surface.
+//
+// Ack discipline for sealed deliveries, stated where the opener lives: a
+// caller acknowledging queue positions should ack a SealedDelivery frame's
+// OUTER position REGARDLESS of Apply's verdict — displayed and forfeited are
+// both terminal, and withholding the ack would freeze the high-water mark
+// behind an unreadable frame, forcing eternal redelivery of everything
+// after it. Key loss forfeits that device's queued messages (adr:004
+// consequence); the ack records the forfeiture, it does not cause it.
 //
 // There is deliberately no transport here: no dialing, no read loop, no
 // reconnect. internal/control owns the connection lifecycle (ts:reconnect-
@@ -64,9 +79,11 @@ import (
 	"log/slog"
 	"time"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/maleolabs/walkie/internal/clock"
+	"github.com/maleolabs/walkie/internal/crypto"
 	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
 	"github.com/maleolabs/walkie/internal/message"
 )
@@ -80,6 +97,15 @@ type Hub struct {
 	clk    clock.Clock
 	logger *slog.Logger
 	log    *message.Log
+
+	// identity is this device's X25519 keypair (ts:queue-sealed-box): the
+	// private half that opens SealedDelivery frames queued for this device
+	// while it was offline. Nil — the default — means sealed frames are
+	// dropped loudly rather than opened; wire one with UseIdentity before
+	// traffic flows. The key itself is owned by the caller (generated once,
+	// persisted owner-only by crypto.LoadOrCreateIdentity); the hub only
+	// borrows it for Open, never serializes it, never logs it.
+	identity *crypto.IdentityKey
 }
 
 // New returns a Hub speaking as the device named local (the resolved identity
@@ -95,6 +121,19 @@ func New(local string, clk clock.Clock, logger *slog.Logger) *Hub {
 		logger: logger,
 		log:    message.NewLog(local, 0, 0),
 	}
+}
+
+// UseIdentity wires this device's X25519 identity key for opening sealed
+// queue deliveries (ts:queue-sealed-box). Call once at assembly, before any
+// traffic flows — the same set-before-Start discipline as control.Client's
+// OnEnvelope — so no read loop can observe the wiring mid-flight. A nil key
+// is refused: "forgot to wire crypto" must fail loudly here, not surface
+// later as every queued message silently vanishing.
+func (h *Hub) UseIdentity(id *crypto.IdentityKey) {
+	if id == nil {
+		panic("messagehub: UseIdentity: identity must not be nil (leave unwired to drop sealed deliveries loudly)")
+	}
+	h.identity = id
 }
 
 // SendDirect composes a direct message to recipient and files it locally.
@@ -171,16 +210,75 @@ func (h *Hub) SendBroadcast(body string) (*walkiev1.Envelope, error) {
 // of something already shown (false — criterion 3's verdict, delivered by
 // message.Log.Append's dedup gate).
 //
-// Only the two text payloads are this package's business; anything else
-// (presence, handshake, errors) is ignored untouched — other seams
-// (presenceview, the connection state machine) own those, and swallowing them
-// here would hide traffic another consumer is waiting for. A nil envelope is
-// likewise a no-op, because a defensive panic helps nobody at a read loop.
+// The two text payloads are this package's business, plus — with an identity
+// wired — sealed queue deliveries, which are text that travelled encrypted:
+// Apply opens the box and folds the INNER envelope in exactly as if it had
+// arrived live, dedup keyed on the inner ULID that rode inside the box. A
+// box that fails authentication is dropped WHOLE, loudly and content-free:
+// there is no partial plaintext to act on, and a forfeited message must not
+// look like a display hiccup. Callers ack such a frame's outer position
+// regardless of the verdict — see the ack discipline in the package comment.
+//
+// Everything else (presence, handshake, errors) is ignored untouched — other
+// seams (presenceview, the connection state machine) own those, and
+// swallowing them here would hide traffic another consumer is waiting for. A
+// nil envelope is likewise a no-op, because a defensive panic helps nobody
+// at a read loop.
 func (h *Hub) Apply(env *walkiev1.Envelope) (message.Message, bool) {
 	if env == nil {
 		return message.Message{}, false
 	}
+	if sd := env.GetSealedDelivery(); sd != nil {
+		return h.applySealed(env.GetPosition(), sd)
+	}
+	return h.applyText(env)
+}
 
+// applySealed opens one SealedDelivery payload with this device's identity
+// key and folds the inner envelope in through the SAME path live text takes.
+//
+// Failure modes, all drop-whole and loud, never partial:
+//
+//   - no identity wired: every sealed frame is unreadable by construction;
+//     logged once per frame at Error with the position (the ack handle) and
+//     nothing else;
+//   - Open fails (crypto.ErrAuthFailed or structural): the box did not
+//     authenticate — tampered at rest, corrupted, or sealed to a key this
+//     device no longer holds (criterion 7's forfeiture). The error carries
+//     reason class only; neither ciphertext nor key material ever reaches a
+//     log line;
+//   - opened bytes do not decode: authenticated garbage — impossible under
+//     a correct AEAD, refused anyway rather than half-trusted.
+func (h *Hub) applySealed(position uint64, sd *walkiev1.SealedDelivery) (message.Message, bool) {
+	if h.identity == nil {
+		h.logger.Error("sealed delivery DROPPED: no identity key wired",
+			slog.Uint64("position", position),
+		)
+		return message.Message{}, false
+	}
+	opened, err := crypto.Open(h.identity, sd.GetCiphertext())
+	if err != nil {
+		h.logger.Error("sealed delivery UNREADABLE: dropped whole (key lost or box inauthentic)",
+			slog.Uint64("position", position),
+			slog.String("reason", err.Error()),
+		)
+		return message.Message{}, false
+	}
+	var inner walkiev1.Envelope
+	if err := proto.Unmarshal(opened, &inner); err != nil {
+		h.logger.Error("sealed delivery opened but did not decode: dropped whole",
+			slog.Uint64("position", position),
+			slog.String("reason", err.Error()),
+		)
+		return message.Message{}, false
+	}
+	return h.applyText(&inner)
+}
+
+// applyText folds one plaintext envelope into the log — the shared path for
+// live deliveries and opened sealed ones, so the two ingest paths cannot
+// drift apart in what they file or how they dedup.
+func (h *Hub) applyText(env *walkiev1.Envelope) (message.Message, bool) {
 	var msg message.Message
 	switch payload := env.GetPayload().(type) {
 	case *walkiev1.Envelope_DirectMessage:
