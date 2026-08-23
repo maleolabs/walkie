@@ -232,6 +232,17 @@ func (c *fakeCoordinator) killConns() {
 	c.live = make(map[net.Conn]struct{})
 }
 
+// lastHelloPosition returns the most recent Hello.last_acked_position the
+// coordinator recorded, or 0 when no Hello has arrived yet.
+func (c *fakeCoordinator) lastHelloPosition() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.hellos) == 0 {
+		return 0
+	}
+	return c.hellos[len(c.hellos)-1]
+}
+
 func (c *fakeCoordinator) helloPositions() []uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -242,6 +253,15 @@ func (c *fakeCoordinator) ackPositions() []uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]uint64(nil), c.acks...)
+}
+
+// sentAfterMark returns the frames written to clients from index mark
+// onward — the absolute-position variant of sentAfter for scenarios that do
+// not bump generations.
+func (c *fakeCoordinator) sentAfterMark(mark int) []sentFrame {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]sentFrame(nil), c.sentLog[mark:]...)
 }
 
 // sentAfter returns the frames written to clients at generation >= gen.
@@ -278,7 +298,7 @@ func dialThrough(link *testnet.Link, coord *fakeCoordinator) DialFunc {
 // the test is driving. A bounded burst of yields makes "wait for the system
 // to settle" mean what it says without introducing any real-time sleep.
 func yieldTo() {
-	for range 16 {
+	for range 64 {
 		runtime.Gosched()
 	}
 }

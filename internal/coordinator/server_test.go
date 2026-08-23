@@ -350,10 +350,15 @@ func TestUnhandledPayloadIgnoredConnectionStaysOpen(t *testing.T) {
 		t.Fatalf("write heartbeat: %v", err)
 	}
 
-	// No reply should arrive for the heartbeat; the next read returns only
-	// when the HELLO's ack does. If the skeleton wrongly answered or closed,
-	// this round trip fails.
+	// The heartbeat IS answered now — with the schema's own Heartbeat echo,
+	// the pong half of the application-level heartbeat (ts:reconnect-resume).
+	// The unhandled payload before it was still logged-and-ignored, and the
+	// follow-up handshake succeeding on the same connection proves the
+	// connection stayed open. Skip the pong, then require the Hello's ack.
 	got := roundTrip(t, ctx, ws, helloEnvelope(walkiev1.MaxProtocolVersion))
+	for got.GetHeartbeat() != nil {
+		got = roundTrip(t, ctx, ws, helloEnvelope(walkiev1.MaxProtocolVersion))
+	}
 	if got.GetHelloAck() == nil {
 		t.Fatalf("post-heartbeat reply = %T, want HelloAck", got.GetPayload())
 	}
