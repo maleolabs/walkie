@@ -94,6 +94,29 @@ func ConversationKey(peer string) string {
 	return dmKeyPrefix + peer
 }
 
+// ConversationKeyFor derives msg's conversation key from the perspective of
+// the device named local: broadcasts land in [BroadcastConversation], a direct
+// message joins the conversation with its peer whichever direction it
+// travelled. It is the single derivation every consumer must use — the
+// display [Log] files by it and sto:message-history stores by it — because
+// two derivations that can drift would put display and history into
+// different conversations, which is exactly the kind of bug neither package
+// can see from inside itself.
+//
+// A message naming neither local as sender nor local as recipient is filed
+// under its sender, the only honest reading of traffic this device received;
+// guessing harder than that is how display models end up confidently wrong.
+func ConversationKeyFor(local string, msg Message) string {
+	if msg.IsBroadcast() {
+		return BroadcastConversation
+	}
+	peer := msg.Sender
+	if peer == local {
+		peer = msg.Recipient
+	}
+	return ConversationKey(peer)
+}
+
 // idEntropy source state. ulid.Monotonic is not safe for concurrent use, so
 // every NewID call takes the mutex; generation is not hot enough for the lock
 // to matter at human messaging rates.
