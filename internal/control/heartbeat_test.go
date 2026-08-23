@@ -22,6 +22,7 @@ func testConfig() Config {
 		BackoffCap:       time.Minute,
 		HeartbeatPeriod:  5 * time.Second,
 		DeadPeerInterval: 12 * time.Second,
+		HandshakeTimeout: 3 * time.Second,
 	}
 }
 

@@ -42,20 +42,26 @@
 // order: criterion 6's "at all times" is delivered as an event stream that
 // cannot drop, plus [Machine.State] for the initial render.
 //
-// # What this package owns today, and what wires it later
+// # What this package owns
 //
-// The control core lives here now: the state machine, the full-jitter backoff
-// schedule ([Backoff]), and the dead-peer watchdog ([Watchdog]) that sends
-// application-level Heartbeats and declares the peer dead when inbound traffic
-// stops for Config.DeadPeerInterval. Every interval comes from [Config] and
-// runs on clock.Clock; no literal duration appears in any logic path.
+// The whole control-plane connection lives here now. The core: the state
+// machine, the full-jitter backoff schedule ([Backoff]), and the dead-peer
+// watchdog ([Watchdog]) that sends application-level Heartbeats and declares
+// the peer dead when inbound traffic stops for Config.DeadPeerInterval. The
+// wire half: [Client], the reconnect supervisor that dials ([DialFunc]),
+// performs the Hello/HelloAck handshake carrying Hello.last_acked_position
+// (criterion 4's resume input), runs the read loop that feeds
+// [Watchdog.Activity] from every inbound frame, re-arms the backoff between
+// attempts on clock.Clock, and resets the attempt counter on reaching online.
+// Every interval comes from [Config]; no literal duration appears in any
+// logic path.
 //
-// Deliberately NOT here yet: dialing, the Hello/HelloAck exchange, the read
-// loop, queue resumption by Hello.last_acked_position, and the retry loop that
-// re-arms [Backoff] between attempts. Those are the wire half of this item,
-// which adapts real connections onto [Sender] and feeds [Watchdog.Activity]
-// from its read loop. Nothing in this file may grow a dependency on the data
-// plane: arc:system-overview gives the data plane its own keepalive and its own
+// The production transport is the WebSocket ([WebSocketDialer]); tests
+// substitute framed sessions over internal/testnet links onto the same seam,
+// which is what keeps twenty simulated clients cheap enough to assert on.
+//
+// Nothing in this package may grow a dependency on the data plane:
+// arc:system-overview gives the data plane its own keepalive and its own
 // lifetime precisely so a control-plane reconnect cannot tear down a call.
 //
 // # Testing

@@ -190,7 +190,21 @@ func (w *Watchdog) Activity() {
 // failed write, a read error, a partition error. This is failure mode (b):
 // death already proven, so the machine goes straight to disconnected with no
 // degraded waypoint, and the watchdog retires itself.
+//
+// The verdict is CLAIMED under w.mu (stopped set before any transition): a
+// silence deadline firing concurrently is a competing verdict for the same
+// death, and exactly one of them may drive the machine — the loser must see
+// stopped and retire, or the illegal-edge panic turns a routine race into a
+// crash.
 func (w *Watchdog) SendFailed(err error) {
+	w.mu.Lock()
+	if w.stopped {
+		w.mu.Unlock()
+		return // another verdict (or Stop) already owns this death
+	}
+	w.stopped = true
+	w.mu.Unlock()
+
 	w.logger.Warn("control: transport failure",
 		slog.String("reason", err.Error()),
 	)
@@ -269,7 +283,7 @@ func (w *Watchdog) beatLoop() {
 			w.logger.Warn("control: heartbeat send failed",
 				slog.String("reason", err.Error()),
 			)
-			w.transitionDisconnected(fmt.Sprintf("heartbeat send failed: %v", err))
+			w.SendFailed(fmt.Errorf("heartbeat send failed: %w", err))
 			return
 		}
 	}
@@ -278,6 +292,18 @@ func (w *Watchdog) beatLoop() {
 // watchDead waits for one generation's silence deadline and declares the
 // peer dead if the generation is still current. One goroutine per deadline;
 // exits via quit (watchdog stopped) or by delivering the verdict.
+//
+// # The verdict race, and why the claim is under the lock
+//
+// A silence deadline and a transport error can observe the SAME death at
+// nearly the same moment. Both verdicts funnel through a claim — stopped set
+// under w.mu before any machine transition — so exactly one of them drives
+// the machine and the loser retires. Without the claim, a teardown that won
+// the race moves the machine to disconnected and the late degraded verdict
+// then hits an illegal edge (the table panics loudly by design); the panic
+// would be reporting a real interleaving with the wrong remedy. Found by
+// ts:reconnect-resume's client-level tests under -race repetition; the fix
+// is here because the policy owns its verdicts.
 func (w *Watchdog) watchDead(gen uint64, tm clock.Timer) {
 	select {
 	case <-w.quit:
@@ -287,9 +313,10 @@ func (w *Watchdog) watchDead(gen uint64, tm clock.Timer) {
 
 	w.mu.Lock()
 	if w.stopped || gen != w.gen {
-		// Superseded by newer activity or stopped outright: this fire is
-		// stale and must expire nothing — the fresher watcher owns the
-		// truth. Same gen-check shape as the presence tracker's leases.
+		// Superseded by newer activity, stopped outright, or beaten by a
+		// transport-error verdict: this fire is stale and must expire
+		// nothing — the winner owns the truth. Same gen-check shape as the
+		// presence tracker's leases.
 		//
 		// Stop the deadline explicitly: the fire already happened (that is
 		// why this goroutine is running), but on the injected clock every
@@ -301,6 +328,16 @@ func (w *Watchdog) watchDead(gen uint64, tm clock.Timer) {
 		w.mu.Unlock()
 		return
 	}
+	if w.mach.State() != StateOnline {
+		// The session died another way while this fire sat queued: the
+		// machine already tells the true story (directly disconnected, no
+		// degraded waypoint). Retire without a second verdict.
+		tm.Stop()
+		w.mu.Unlock()
+		w.Stop()
+		return
+	}
+	w.stopped = true // claim: no other verdict may start from here
 	w.mu.Unlock()
 
 	// Failure mode (a): socket open, peer silent past the interval. Two

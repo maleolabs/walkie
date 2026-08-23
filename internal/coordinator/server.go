@@ -633,6 +633,18 @@ func (s *Server) dispatch(ctx context.Context, out *connWriter, id tsauth.Identi
 		if s.presence != nil {
 			s.presence.ObserveHeartbeat(deviceOf(id))
 		}
+		// Answer with the schema's own Heartbeat — the PONG half of the
+		// application-level heartbeat (ts:reconnect-resume). This is
+		// transport hygiene, not presence state: the echo asserts nothing
+		// and authorises nothing, it just gives the client's dead-peer
+		// watchdog inbound evidence of life. Without it every quiet client
+		// — one alone on a tailnet, say — would hear silence past its
+		// DeadPeerInterval and cycle its connection forever, for want of a
+		// byte only the coordinator can send. Older clients ignore the echo
+		// like any payload they do not know (adr:003 mixed-fleet rule).
+		out.write(ctx, &walkiev1.Envelope{
+			Payload: &walkiev1.Envelope_Heartbeat{Heartbeat: &walkiev1.Heartbeat{}},
+		})
 		return true
 
 	case *walkiev1.Envelope_PresenceStatusChange:

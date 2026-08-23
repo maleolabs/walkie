@@ -35,6 +35,21 @@ type Config struct {
 	// 3). Any inbound traffic proves the pipe alive, which is why the
 	// deadline measures silence, not missing pongs specifically.
 	DeadPeerInterval time.Duration
+
+	// HandshakeTimeout bounds the Hello/HelloAck exchange: how long the
+	// client waits for HelloAck after sending Hello before the attempt is
+	// declared a handshake failure and the retry loop takes over.
+	//
+	// Why a dedicated knob rather than reusing DeadPeerInterval: the state
+	// machine separates handshaking from online precisely because the two
+	// phases fail differently (state.go), and burying one phase's deadline
+	// inside another's tunable would couple two unrelated decisions — a
+	// test shrinking one could silently break the other. A peer that cannot
+	// complete a handshake in this window is, for connection purposes,
+	// already dead; without the bound such a peer would wedge the client in
+	// handshaking forever, since the watchdog that detects silence only
+	// starts once the session is online.
+	HandshakeTimeout time.Duration
 }
 
 // DefaultConfig returns the provisional production defaults.
@@ -53,12 +68,16 @@ type Config struct {
 //     of a restart (criterion 1 wants prompt recovery), and the cap keeps a
 //     long outage from pinning a client at multi-minute waits when the
 //     coordinator comes back.
+//   - HandshakeTimeout 10s: several round trips' worth of slack on a healthy
+//     tailnet link, short enough that a wedged handshake costs one backoff
+//     cycle rather than a stuck client. Provisional, like every number here.
 func DefaultConfig() Config {
 	return Config{
 		BackoffBase:      1 * time.Second,
 		BackoffCap:       60 * time.Second,
 		HeartbeatPeriod:  15 * time.Second,
 		DeadPeerInterval: 45 * time.Second,
+		HandshakeTimeout: 10 * time.Second,
 	}
 }
 
@@ -85,6 +104,9 @@ func (c Config) validate() error {
 	if c.DeadPeerInterval <= c.HeartbeatPeriod {
 		return fmt.Errorf("control: config: dead-peer interval %s must exceed heartbeat period %s",
 			c.DeadPeerInterval, c.HeartbeatPeriod)
+	}
+	if c.HandshakeTimeout <= 0 {
+		return fmt.Errorf("control: config: handshake timeout must be positive (got %s)", c.HandshakeTimeout)
 	}
 	return nil
 }
