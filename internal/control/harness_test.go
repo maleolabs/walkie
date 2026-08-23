@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/maleolabs/walkie/internal/clock"
-	"github.com/maleolabs/walkie/internal/testnet"
 	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
+	"github.com/maleolabs/walkie/internal/testnet"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -134,18 +134,18 @@ type fakeCoordinator struct {
 	device   string
 	behavior peerBehavior
 
-	mu       sync.Mutex
-	accept   chan net.Conn
-	live     map[net.Conn]struct{}
-	gen      int
-	hellos   []uint64 // Hello.last_acked_position values, in arrival order
-	acks     []uint64 // QueueAck positions received, in arrival order
-	sentLog  []sentFrame
+	mu      sync.Mutex
+	accept  chan net.Conn
+	live    map[net.Conn]struct{}
+	gen     int
+	hellos  []uint64 // Hello.last_acked_position values, in arrival order
+	acks    []uint64 // QueueAck positions received, in arrival order
+	sentLog []sentFrame
 }
 
 type sentFrame struct {
-	gen int    // connection generation: bumped by killConns
-	pos uint64 // envelope position (0 for non-queue frames)
+	gen  int    // connection generation: bumped by killConns
+	pos  uint64 // envelope position (0 for non-queue frames)
 	kind string
 }
 

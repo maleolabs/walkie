@@ -347,7 +347,6 @@ func TestAttemptCounterResetsAfterSuccessfulOnline(t *testing.T) {
 	}
 }
 
-
 func TestHandshakeTimeoutIsAConfiguredFailureNotAWedge(t *testing.T) {
 	// A coordinator that accepts the socket and never answers HelloAck must
 	// cost one backoff cycle, not the client's future. The timeout comes
