@@ -75,6 +75,37 @@ Each package's doc comment names the work item that owns it. Phase-2 concerns �
 real-time voice, the direct data plane, file transfer — have no packages yet on
 purpose; `plan:roadmap-v1` sequences them after the MVP.
 
+## Message history
+
+Every message you send or receive is stored on your device in a plain SQLite
+database (default `~/.walkie/history.db`), so history survives restarts.
+
+**Your message history is NOT encrypted.** Anyone who can read your device's
+disk can read every message: another user account on a shared machine, someone
+holding your stolen laptop, a copied disk image or backup. walkie does not
+encrypt local history. This is a deliberately accepted limitation recorded in
+`adr:004-security-model`, not an oversight — full-disk encryption is the real
+mitigation, and it is configured outside walkie. File permissions are
+owner-only (0600 file, 0700 directory), which stops other local users on a
+multi-user machine and nothing beyond that.
+
+History is bounded: messages older than 30 days are removed, and the store
+never holds more than 10,000 messages (oldest evicted first, loudly logged).
+Retention logs record counts, never message content.
+
+Query it from the command line — one JSON object per line, made for scripts:
+
+```sh
+walkie history -conversation alice.tail-scale.ts.net.     # one conversation
+walkie history -from 2026-08-01T09:00:00Z -to 2026-08-01T17:00:00Z
+walkie history -conversation broadcast -db /path/to/history.db
+```
+
+See `walkie history -help` for the full flag list; the same security statement
+ships in that help output. When the quickstart and runbook land
+(`ts:docs-quickstart-runbook`), they must carry this unencrypted-at-rest
+statement forward so users keep being told after this README is rewritten.
+
 ## Remote shell access
 
 walkie does not provide it, by decision rather than omission — see
