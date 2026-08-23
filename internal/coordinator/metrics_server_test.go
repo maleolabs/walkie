@@ -13,9 +13,9 @@ import (
 
 	"github.com/maleolabs/walkie/internal/clock"
 	"github.com/maleolabs/walkie/internal/coordinator/tsauth"
+	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
 	"github.com/maleolabs/walkie/internal/messagehub"
 	"github.com/maleolabs/walkie/internal/obs"
-	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
 )
 
 // discardLogger swallows server logs for tests that assert on metrics, not
