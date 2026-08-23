@@ -59,6 +59,7 @@ import (
 	"github.com/maleolabs/walkie/internal/coordinator/presence"
 	"github.com/maleolabs/walkie/internal/coordinator/queue"
 	"github.com/maleolabs/walkie/internal/coordinator/tsauth"
+	"github.com/maleolabs/walkie/internal/crypto"
 	"github.com/maleolabs/walkie/internal/store"
 )
 
@@ -135,11 +136,32 @@ func run(logger *slog.Logger) error {
 	// explicitly, and survival across this process's restarts — instead of
 	// the skeleton's loud drop. Registered AFTER the tracker's defer so
 	// Close order runs tracker-then-queue-then-store.
+	//
+	// Deliberately the PLAINTEXT queue for now (ts:queue-sealed-box): the
+	// sealed variant exists and is proven (queue.NewSealed), but the drain
+	// contract hands recipients decoded envelopes and the control-plane
+	// schema has no payload able to carry opaque sealed-box bytes yet —
+	// sealing before that additive schema change would strand every queued
+	// message undeliverable. See internal/coordinator/queue.AtRest.
 	inbox, err := queue.New(st, clock.Real(), cfg.queueTTL, cfg.queueMaxSize, logger)
 	if err != nil {
 		return fmt.Errorf("start offline queue: %w", err)
 	}
 	defer inbox.Close()
+
+	// The TOFU keystore (ts:queue-sealed-box): pins each device's X25519
+	// public key on first announce, serves the table as PublicKeyDirectory
+	// snapshots, and REFUSES a changed key for a known peer — nil confirmer,
+	// because this process is headless and assumed consent is not consent.
+	// Recovery from a refused change is manual by design: verify fingerprints
+	// out of band, then correct the pin file by hand with the process
+	// stopped. Key distribution is independent of queue encryption and safe
+	// to run from day one; pins accumulate while clients exist.
+	keys, err := crypto.OpenKeystore(filepath.Join(cfg.stateDir, "peer-keys.json"), clock.Real(), logger)
+	if err != nil {
+		return fmt.Errorf("open peer key keystore: %w", err)
+	}
+	defer keys.Close()
 
 	// Criterion 1, production path: this process IS a tailnet node. tsnet
 	// brings its own WireGuard, DERP fallback and node identity inside the
@@ -187,7 +209,10 @@ func run(logger *slog.Logger) error {
 	// The queue is the OfflineSink: holds for offline devices, drains on
 	// Hello with the client's last_acked_position, refuses at the size cap
 	// (see OfflineSink and QueueDrain in internal/coordinator/routing.go).
+	// WireKeys attaches the TOFU pin store before Serve — key distribution
+	// and its refusal gate live from this process's first connection.
 	coord := coordinator.NewServer(resolver, clock.Real(), logger, tracker, inbox)
+	coord.WireKeys(keys, nil)
 	if err := coord.Serve(ctx, ln); err != nil {
 		// The drain can genuinely fail: a peer that ignores close frames
 		// outlives the grace window. Saying "shutdown complete" then would
