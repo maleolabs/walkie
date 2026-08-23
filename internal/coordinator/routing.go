@@ -138,6 +138,15 @@ func (s *Server) routeTargetsExcept(exclude string) []*connWriter {
 	return out
 }
 
+// routeTargetsAll snapshots every connected device's connections — the
+// audience for coordinator-originated broadcasts that have no sender to
+// exclude (today: the PublicKeyDirectory refresh after a pin moves). A thin
+// named wrapper over the except-form with an empty exclusion so call sites
+// say what they mean instead of relying on "no device is named empty string".
+func (s *Server) routeTargetsAll() []*connWriter {
+	return s.routeTargetsExcept("")
+}
+
 // handleDirect routes one DirectMessage to its named recipient.
 //
 // Refusals are structured ProtocolErrors on the SENDER's connection and never

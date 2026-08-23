@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -292,6 +293,32 @@ func (ks *Keystore) PinnedKey(peer string) ([pubKeySize]byte, bool) {
 	}
 	copy(pub[:], rec.Key)
 	return pub, true
+}
+
+// Entry is one peer's pinned public key as [Keystore.Entries] reports it.
+// Public bytes only — an Entry is safe to put on the wire (it IS what the
+// PublicKeyDirectory carries) and safe to fingerprint for display.
+type Entry struct {
+	Peer string
+	Key  [pubKeySize]byte
+}
+
+// Entries snapshots every pin in the store — the coordinator's source for the
+// PublicKeyDirectory snapshot it serves to clients. Order is peer-name-sorted:
+// a directory is a state statement, not an event stream, and a stable order
+// makes wire records, logs and golden comparisons reproducible (the same
+// stance as every deterministic-test rule in ts:test-harness).
+func (ks *Keystore) Entries() []Entry {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	out := make([]Entry, 0, len(ks.peers))
+	for peer, rec := range ks.peers {
+		var pub [pubKeySize]byte
+		copy(pub[:], rec.Key)
+		out = append(out, Entry{Peer: peer, Key: pub})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Peer < out[j].Peer })
+	return out
 }
 
 // Close releases nothing buffered — every mutation persists synchronously —
