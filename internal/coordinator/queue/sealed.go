@@ -6,13 +6,15 @@ import (
 	"time"
 
 	"github.com/maleolabs/walkie/internal/clock"
+	"github.com/maleolabs/walkie/internal/crypto"
+	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
 	"github.com/maleolabs/walkie/internal/store"
 )
 
 // AtRest is the encryption seam adr:004-security-model puts between the
 // coordinator's queue and its own storage: what a queued payload looks like
 // while it RESTS in the coordinator's database. It is the concrete form of
-// ts:queue-sealed-box's "marshal-before-store, unmarshal-after-load" swap —
+// ts:queue-sealed-box's "marshal-before-store, ship-opaque-after-load" swap —
 // the two boundary points sto:offline-queue's shape reserved for exactly this.
 //
 // # Who decrypts what, stated once and precisely
@@ -27,16 +29,27 @@ import (
 // device's queued messages (criterion 7), because no other copy of the
 // ability to read them exists anywhere.
 //
-// The Open half is therefore THE RECIPIENT'S operation by design. In the
-// final shape the coordinator ships the still-sealed box and the recipient's
-// client opens it on receipt. The control-plane schema does not yet carry a
-// payload able to hold opaque sealed-box bytes (the QueueDrain contract
-// returns decoded envelopes), so until that additive schema change lands,
-// the open half is wired on the coordinator side of the drain — in tests
-// with the recipient's identity, which is the same key operation the
-// recipient will perform. Wiring sealing into production before that carrier
-// exists would strand every queued message undeliverable, so production
-// keeps the plaintext queue until then; see cmd/walkie-coordinator.
+// The Open half is THE RECIPIENT'S operation, on the recipient's machine.
+// Since the control-plane schema grew the SealedDelivery carrier (Envelope
+// field 25), Resume ships the still-sealed box inside that payload and the
+// recipient's client opens it with its own identity key — the coordinator
+// never holds plaintext on the replay path at all. The old shape, where this
+// package opened rows coordinator-side before unmarshalling, existed only
+// because the drain contract lacked a carrier for opaque bytes; it is gone,
+// not deprecated.
+//
+// # The bootstrap rule, decided and written down
+//
+// A message enqueues SEALED only if the recipient's key was ALREADY pinned at
+// enqueue time. A recipient that has never announced (PublicKeyAnnounce) has
+// no pin to seal to, so its messages rest PLAINTEXT — still TTL- and cap-
+// bounded like every other row — and replay as their ordinary payload shape.
+// They are deliberately NOT dropped (silence would lie to the sender) and
+// NOT encrypted to nothing (a box no key can open is a drop with extra
+// steps). Pins never apply retroactively to stored rows: the honest state is
+// "sealed from the first pin onward", clients announce on first connect to
+// keep the plaintext window one connection wide, and the unsealed hold logs
+// an Info line so an operator can see exactly how much rests unencrypted.
 //
 // # Phase 2: the relay fallback reuses this seam unchanged
 //
@@ -47,40 +60,34 @@ import (
 // stores/forwards opaque boxes through this same boundary. No relay code
 // belongs in this package; when phase 2 arrives it consumes AtRest as-is.
 //
-// # Failure semantics are drop-deliberately, never partial
+// # Failure semantics
 //
-// An Open failure means the box did not authenticate (crypto.ErrAuthFailed)
-// or cannot be parsed. There is no plaintext to act on and no way to act on
-// part of an AEAD-verified box, so the row is SKIPPED loudly — logged with
-// recipient, position and reason class, never delivered, never partially
-// processed — and the rest of the resume continues. Deliberate dropping is
-// the specified outcome for an undecryptable message (a lost recipient key
-// forfeits its queued messages; criterion 7): keeping undecryptable rows
-// forever would poison every future resume behind one bad row, while Ack's
-// high-water delete already bounds how long a skipped row can linger.
+// A Seal error refuses the enqueue — nothing is stored, exactly like any
+// other internal failure. There is deliberately NO Open half here to fail:
+// authentication failures now surface at the recipient (crypto.ErrAuthFailed),
+// which drops the whole frame loudly and acks the position — a box it cannot
+// open will never become readable by holding it, and refusing the ack would
+// freeze the high-water mark behind a dead position and force eternal
+// redelivery of everything after it.
 type AtRest interface {
 	// Seal renders one marshalled envelope into the bytes that will rest in
 	// storage for recipient. Called after the envelope is marshalled, before
-	// the INSERT; an error refuses the enqueue (nothing is stored).
-	Seal(recipient string, marshalled []byte) ([]byte, error)
-
-	// Open reverses Seal for one row coming back off storage for recipient.
-	// Called after the SELECT, before the envelope is unmarshalled. An error
-	// skips the row (see the failure semantics above); it never yields
-	// partial content.
-	Open(recipient string, stored []byte) ([]byte, error)
+	// the INSERT. sealed reports which form the returned bytes take: true
+	// for a sealed box (the recipient's key was pinned), false for the
+	// marshalled envelope verbatim (no pin yet — the bootstrap rule above).
+	// An error refuses the enqueue (nothing is stored).
+	Seal(recipient string, marshalled []byte) (stored []byte, sealed bool, err error)
 }
 
 // NewSealed returns a Queue whose resting bodies pass through atRest — the
-// ts:queue-sealed-box wiring of [New]. Everything else is identical: same
-// retention bounds, same positions, same cursors, same schema. A nil atRest
-// is refused here rather than silently behaving like [New], because a caller
-// that asked for encrypted-at-rest and got plaintext must fail loudly, not
-// quietly.
-//
-// The plain [New] constructor remains the production wiring until the
-// control-plane schema grows a sealed-delivery carrier (see the AtRest comment
-// for why enabling earlier would strand deliveries).
+// ts:queue-sealed-box wiring of [New], and the PRODUCTION constructor as of
+// the SealedDelivery carrier: Enqueue seals to the recipient's pinned key,
+// Resume emits SealedDelivery frames carrying the opaque ciphertext, and the
+// coordinator structurally cannot read queued bodies. Everything else is
+// identical to [New]: same retention bounds, same positions, same cursors,
+// same schema. A nil atRest is refused here rather than silently behaving
+// like [New], because a caller that asked for encrypted-at-rest and got
+// plaintext must fail loudly, not quietly.
 func NewSealed(st *store.Store, clk clock.Clock, ttl time.Duration, maxSize int, logger *slog.Logger, atRest AtRest) (*Queue, error) {
 	if atRest == nil {
 		return nil, fmt.Errorf("queue: new sealed: atRest must not be nil (use New for the plaintext queue)")
@@ -93,40 +100,145 @@ func NewSealed(st *store.Store, clk clock.Clock, ttl time.Duration, maxSize int,
 	return q, nil
 }
 
-// sealForStorage applies the AtRest seam on the enqueue boundary. A nil seam
-// (plain [New]) passes bytes through unchanged, byte-for-byte the pre-sealing
-// behaviour existing tests pin.
+// PinnedKeyLookup is the slice of a TOFU key store the sealing seam needs:
+// the pinned public key for a peer, if one exists. *crypto.Keystore satisfies
+// this structurally; the narrow interface keeps this package from importing
+// the keystore implementation and lets tests substitute fakes.
+type PinnedKeyLookup interface {
+	PinnedKey(peer string) ([32]byte, bool)
+}
+
+// keystoreSealer is the PRODUCTION AtRest: it seals each queued body to the
+// recipient's pinned public key with the audited primitive (crypto.Seal,
+// X25519 + XChaCha20-Poly1305), and — when the recipient has not announced a
+// key yet — stores the envelope verbatim under the plain marker, logging the
+// hold so the amount of plaintext-at-rest is always visible to the operator
+// (the bootstrap rule on AtRest; never a silent drop, never encrypt-to-
+// nothing).
+type keystoreSealer struct {
+	keys   PinnedKeyLookup
+	logger *slog.Logger
+}
+
+// NewKeystoreSealer returns the production AtRest sealing against ks's pins.
+// A nil logger falls back to slog's default: the unsealed-hold line is a
+// security-relevant fact and must never be silently discarded.
+func NewKeystoreSealer(keys PinnedKeyLookup, logger *slog.Logger) AtRest {
+	if keys == nil {
+		// Unreachable from correct wiring; refused rather than producing a
+		// sealer that plaintexts EVERYTHING by lookup failure.
+		panic("queue: NewKeystoreSealer: keys must not be nil")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &keystoreSealer{keys: keys, logger: logger}
+}
+
+func (s *keystoreSealer) Seal(recipient string, marshalled []byte) ([]byte, bool, error) {
+	pub, ok := s.keys.PinnedKey(recipient)
+	if !ok {
+		s.logger.Info("queued message stored UNSEALED: recipient key not pinned yet",
+			slog.String("recipient", recipient),
+			slog.Int("body_bytes", len(marshalled)),
+		)
+		return marshalled, false, nil
+	}
+	box, err := crypto.Seal(pub, marshalled)
+	if err != nil {
+		return nil, false, err
+	}
+	return box, true, nil
+}
+
+// Stored-body framing. One marker byte prefixes every BLOB this package
+// writes, naming what follows:
+//
+//	storedPlainMarker  (0x00) || marshalled envelope  — rested unsealed
+//	storedSealedMarker (0x01) || sealed box           — rested encrypted
+//
+// Why a marker rather than sniffing the bytes: a sealed box begins with its
+// own version byte 0x01 and a marshalled envelope begins with field tags, so
+// today the two happen to be distinguishable by inspection — but "happens to"
+// is not a format. The marker is one explicit byte the queue itself writes
+// from Seal's verdict, making Resume total over storage instead of lucky.
+// Introduced together with the sealing flip; no release ever shipped the
+// unframed format, so there is nothing to migrate.
+const (
+	storedPlainMarker  byte = 0x00
+	storedSealedMarker byte = 0x01
+)
+
+// sealForStorage applies the AtRest seam on the enqueue boundary and frames
+// the result with its marker. A nil seam (plain [New]) stores the envelope
+// verbatim under the plain marker — byte-for-byte the pre-sealing behaviour
+// existing tests pin, plus the one framing byte.
 func (q *Queue) sealForStorage(recipient string, marshalled []byte) ([]byte, error) {
 	if q.atRest == nil {
-		return marshalled, nil
+		return append([]byte{storedPlainMarker}, marshalled...), nil
 	}
-	sealed, err := q.atRest.Seal(recipient, marshalled)
+	stored, sealed, err := q.atRest.Seal(recipient, marshalled)
 	if err != nil {
 		return nil, fmt.Errorf("seal for storage: %w", err)
 	}
-	return sealed, nil
+	marker := storedPlainMarker
+	if sealed {
+		marker = storedSealedMarker
+	}
+	return append([]byte{marker}, stored...), nil
 }
 
-// openFromStorage applies the AtRest seam on the resume boundary and reports
-// whether the row is deliverable. A nil seam passes through; an Open failure
-// logs loudly and reports false — the caller skips the whole row (never
-// delivers, never partially processes) and continues with the rest.
-func (q *Queue) openFromStorage(recipient string, position int64, messageID string, stored []byte) ([]byte, bool) {
-	if q.atRest == nil {
-		return stored, true
-	}
-	opened, err := q.atRest.Open(recipient, stored)
-	if err != nil {
-		// Loud, content-free: recipient, position and message_id identify
-		// the row; the reason class says why it died. Neither the stored
-		// bytes nor any key material belongs in this line.
-		q.logger.Error("queued message undecryptable: dropped deliberately",
+// deliveryFromStorage reverses the framing on the resume boundary and builds
+// the wire envelope for one row. A sealed row becomes a SealedDelivery frame
+// carrying the ciphertext VERBATIM — the coordinator cannot open it and must
+// not mangle it; the recipient authenticates the exact bytes that rested. A
+// plain row unmarshals to the original stamped envelope. An unknown marker
+// means a row written by a future format this build cannot speak: skipped
+// loudly (logged with recipient, position and reason class, never delivered,
+// never partially processed) so one alien row cannot withhold the rest of
+// the resume — the same posture undecryptable rows had when opening lived
+// here.
+func (q *Queue) deliveryFromStorage(recipient string, pos int64, messageID string, body []byte) (*walkiev1.Envelope, bool) {
+	if len(body) < 1 {
+		q.logger.Error("queued message unreadable: empty stored body",
 			slog.String("recipient", recipient),
-			slog.Int64("position", position),
+			slog.Int64("position", pos),
 			slog.String("message_id", messageID),
-			slog.String("reason", err.Error()),
 		)
 		return nil, false
 	}
-	return opened, true
+	marker, payload := body[0], body[1:]
+	switch marker {
+	case storedSealedMarker:
+		// Position rides OUTSIDE the box (it is the ack handle); everything
+		// else about the message — identity, timestamps, payload — stays
+		// encrypted until the recipient opens it.
+		return &walkiev1.Envelope{
+			Position: uint64(pos),
+			Payload: &walkiev1.Envelope_SealedDelivery{SealedDelivery: &walkiev1.SealedDelivery{
+				Ciphertext: append([]byte(nil), payload...),
+			}},
+		}, true
+	case storedPlainMarker:
+		env, err := unmarshalOpaque(payload)
+		if err != nil {
+			q.logger.Error("queued message unreadable: body did not decode",
+				slog.String("recipient", recipient),
+				slog.Int64("position", pos),
+				slog.String("message_id", messageID),
+				slog.String("reason", err.Error()),
+			)
+			return nil, false
+		}
+		env.Position = uint64(pos)
+		return env, true
+	default:
+		q.logger.Error("queued message unreadable: unknown storage format",
+			slog.String("recipient", recipient),
+			slog.Int64("position", pos),
+			slog.String("message_id", messageID),
+			slog.Int("format_marker", int(marker)),
+		)
+		return nil, false
+	}
 }

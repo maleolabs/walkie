@@ -37,15 +37,15 @@
 // decrypts what: bodies seal TO THE RECIPIENT's pinned public key, so this
 // package — and the coordinator holding it — can store what it cannot read.
 //
-// State under ts:queue-sealed-box: the swap happened at exactly the two
+// State under ts:queue-sealed-box: ACTIVE. The swap happened at exactly the two
 // boundary points this shape reserved (sealForStorage before the INSERT,
-// openFromStorage after the SELECT), without touching this logic or the
-// schema. [NewSealed] wires it; an undecryptable row is skipped whole, loudly,
-// never partially processed. Production still wires plain [New]: the drain
-// contract hands recipients decoded envelopes, and the control-plane schema
-// does not yet carry a payload able to hold opaque sealed-box bytes — enabling
-// sealing before that additive schema change would strand every queued message
-// undeliverable. The seam, its tests, and the byte-level stored-bytes proof
-// are complete; flipping production over is one constructor call plus that
-// one schema addition.
+// deliveryFromStorage after the SELECT), without touching this logic or the
+// schema. Production wires [NewSealed] over [NewKeystoreSealer]: Enqueue seals
+// to the recipient's pinned key, Resume ships opaque SealedDelivery frames,
+// and the recipient's client opens each box with its own identity key — a box
+// that fails authentication drops whole THERE, loudly, never partially
+// processed, and its position is acked so a forfeited message cannot freeze
+// the ack high-water behind it. A recipient with no pinned key yet rests
+// plaintext under the documented bootstrap rule (sealed.go): logged per hold,
+// never dropped, never encrypted to nothing; pins apply forward only.
 package queue

@@ -695,6 +695,19 @@ func (s *Server) dispatch(ctx context.Context, out *connWriter, id tsauth.Identi
 		)
 		return true
 
+	case *walkiev1.Envelope_SealedDelivery:
+		// Coordinator → client only, and only on queue replay (schema field
+		// doc). A client sending opaque ciphertext AT the coordinator is
+		// speaking backwards — and even if it were not, this process could
+		// do nothing with a box it structurally cannot open (adr:004: it
+		// holds no private half of any peer). Ignored quietly, same posture
+		// as the wrong-direction directory above; the connection survives.
+		s.logger.Debug("payload ignored: wrong direction",
+			slog.String("node_name", id.NodeName),
+			slog.String("payload_type", "SealedDelivery"),
+		)
+		return true
+
 	default:
 		// Structured, content-free: the payload TYPE name is protocol
 		// metadata, safe to log; message_id identifies without disclosing.
@@ -851,6 +864,14 @@ func (s *Server) handleHello(ctx context.Context, out *connWriter, id tsauth.Ide
 	// is the schema's prescribed delivery shape — the consumer may assume a
 	// complete device→key table from here on. Absent when no keystore is
 	// wired (older rigs, tests of other machinery).
+	//
+	// Ordering with sealed deliveries, stated because it looks dangerous and
+	// is not: a SealedDelivery frame arrives BEFORE the directory snapshot,
+	// but the recipient never needed the directory to read its mail — it
+	// opens each box with its OWN local identity key (generated on first
+	// run, announced separately). The directory exists for SENDERS choosing
+	// keys at ingress time, coordinator-side; drain-then-directory costs the
+	// recipient nothing.
 	if dirEnv := s.directoryEnvelope(); dirEnv != nil {
 		out.write(ctx, dirEnv)
 	}
