@@ -100,6 +100,7 @@ type Client struct {
 	mu       sync.Mutex
 	sess     Session // live session (online); nil while offline
 	inflight Session // dialed but not yet online — must die with Stop too
+	identity string  // device name echoed by the last successful HelloAck
 
 	sendMu sync.Mutex // serializes writes onto the live session
 
@@ -214,6 +215,23 @@ func (c *Client) Stop() {
 // subscribe via Machine.Subscribe for the change stream).
 func (c *Client) State() State { return c.mach.State() }
 
+// ConnectedAs reports the device name the coordinator resolved and echoed
+// in the last successful HelloAck — who the tailnet says this client is.
+// Empty while offline. sto:terminal-ui renders it next to the state ("you
+// are X, connected/disconnected"), because a user deciding whether they can
+// be reached needs both halves.
+func (c *Client) ConnectedAs() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.identity
+}
+
+func (c *Client) setIdentity(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.identity = name
+}
+
 // Machine exposes the underlying state machine for consumers that subscribe
 // (sto:terminal-ui renders it; ts:control-socket streams it). The client
 // remains the ONLY driver of transitions — exposure is for observation, not
@@ -267,6 +285,25 @@ func (c *Client) Acknowledge(position uint64) {
 // LastAcked reports the highest acknowledged position (diagnostics and
 // tests; the authoritative use is inside the handshake).
 func (c *Client) LastAcked() uint64 { return c.acked.Load() }
+
+// RestoreAckPosition seeds the acknowledged high-water from durable state —
+// the store's record of this device's acknowledgements, loaded when the
+// process starts. Without it a restarted client would forget everything it
+// had acknowledged and every reconnect would replay from zero, which is
+// precisely the full-replay outcome criterion 4 forbids. Unlike
+// Acknowledge this sends nothing: the position came FROM durable agreement
+// with the coordinator, not from newly processed work.
+func (c *Client) RestoreAckPosition(position uint64) {
+	for {
+		cur := c.acked.Load()
+		if position <= cur {
+			return
+		}
+		if c.acked.CompareAndSwap(cur, position) {
+			return
+		}
+	}
+}
 
 // errNoSession is send's internal shape for "offline"; Send maps it to the
 // exported ErrOffline so callers can errors.Is against a stable sentinel.
@@ -326,7 +363,7 @@ func (c *Client) run(ctx context.Context) {
 		}
 		c.setInflight(sess)
 
-		_, err = c.handshake(sess)
+		ack, err := c.handshake(sess)
 		if err != nil {
 			_ = sess.Close()
 			c.clearInflight(sess)
@@ -346,6 +383,7 @@ func (c *Client) run(ctx context.Context) {
 		// any later would make an online client briefly reject sends with
 		// ErrOffline, a lie criterion 6's consumers would render.
 		c.installSession(sess)
+		c.setIdentity(ack.GetDevice())
 		if _, err := c.mach.Transition(StateOnline, "handshake completed"); err != nil {
 			_ = sess.Close()
 			return

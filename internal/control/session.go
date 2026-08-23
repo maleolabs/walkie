@@ -143,11 +143,17 @@ func (s *wsSession) Recv() (*walkiev1.Envelope, error) {
 	return unmarshalEnvelope(data)
 }
 
-// Close performs the polite close handshake. Idempotent at the transport
-// level (a second Close on a closed conn returns an error, which is fine —
-// teardown paths treat Close errors as informational).
+// Close tears the transport down IMMEDIATELY (CloseNow): no polite close
+// handshake, no waiting for the peer's echo. Asymmetry with the server is
+// deliberate — the coordinator performs the graceful GoingAway direction on
+// ITS shutdown, while a client teardown typically happens BECAUSE the peer
+// is dead or unreachable; blocking a teardown on a dead peer's close-frame
+// echo stalls the supervisor for the WebSocket layer's full internal
+// timeout exactly when promptness matters most. Idempotent at the
+// transport level (a second Close on a closed conn errors informationally).
 func (s *wsSession) Close() error {
-	return s.ws.Close(websocket.StatusNormalClosure, "")
+	s.ws.CloseNow()
+	return nil
 }
 
 // maxClientEnvelopeBytes bounds one inbound control-plane frame, mirroring
