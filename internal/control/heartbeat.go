@@ -93,6 +93,7 @@ type Watchdog struct {
 	mu       sync.Mutex
 	gen      uint64      // current silence-deadline generation
 	hbTimer  clock.Timer // periodic heartbeat arming
+	deadline clock.Timer // the CURRENT silence-deadline timer, for retirement on Stop
 	stopped  bool
 	quit     chan struct{}
 	stopOnce sync.Once
@@ -164,10 +165,19 @@ func StartWatchdog(cfg Config, mach *Machine, send Sender, clk clock.Clock, logg
 
 // armDeadlineLocked arms one fresh silence-deadline watcher with a new
 // generation. Callers hold w.mu. Fresh-timer-per-deadline, not Reset: see
-// the concurrency note on the type comment.
+// the concurrency note on the type comment. The superseded timer is stopped
+// HERE rather than left for its watcher to retire lazily — a fleet-scale
+// simulation rotates one deadline per inbound frame, and eagerly retiring
+// keeps the clock's waiter list proportional to live sessions (its watcher,
+// if it later wakes against a committed fire, still loses the gen check and
+// expires nothing).
 func (w *Watchdog) armDeadlineLocked() {
 	w.gen++
 	tm := w.clk.NewTimer(w.cfg.DeadPeerInterval)
+	if w.deadline != nil {
+		w.deadline.Stop()
+	}
+	w.deadline = tm
 	go w.watchDead(w.gen, tm)
 }
 
@@ -359,12 +369,21 @@ func (w *Watchdog) watchDead(gen uint64, tm clock.Timer) {
 // Stop retires the watchdog: timers disarmed, loops exit, further Activity
 // and verdicts are ignored. Idempotent; safe to call from any goroutine,
 // including the watchdog's own (close never joins).
+//
+// The CURRENT silence-deadline timer is disarmed here too, not just the
+// heartbeat timer: its watcher exits via quit without stopping the timer
+// (it cannot know whether a fire was already committed), so Stop is the
+// only place that can guarantee a retired watchdog leaves NO waiters on
+// the clock — which fleet-scale simulations count on.
 func (w *Watchdog) Stop() {
 	w.stopOnce.Do(func() {
 		w.mu.Lock()
 		w.stopped = true
 		if w.hbTimer != nil {
 			w.hbTimer.Stop()
+		}
+		if w.deadline != nil {
+			w.deadline.Stop()
 		}
 		w.mu.Unlock()
 		close(w.quit)

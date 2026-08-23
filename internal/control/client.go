@@ -533,8 +533,15 @@ func (c *Client) serve(sess Session) {
 			teardownSession() // idempotent: covers the read-error-first ordering
 			c.clearSession(sess)
 			return
-		case ch := <-c.sub.C():
-			if ch.To == StateDegraded || ch.To == StateDisconnected {
+		case <-c.sub.C():
+			// The event is only a HINT that something happened; the machine's
+			// CURRENT state decides. Change delivery is asynchronous, so a
+			// stale event from a PREVIOUS session can land here after this
+			// session went online — tearing down on the event alone would
+			// kill a healthy session, leave the machine online, and send the
+			// supervisor straight into an illegal online->connecting edge.
+			switch c.mach.State() {
+			case StateDegraded, StateDisconnected:
 				teardownSession()
 			}
 		}
