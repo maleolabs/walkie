@@ -20,6 +20,7 @@ import (
 	"github.com/maleolabs/walkie/internal/coordinator/presence"
 	"github.com/maleolabs/walkie/internal/coordinator/queue"
 	"github.com/maleolabs/walkie/internal/coordinator/tsauth"
+	"github.com/maleolabs/walkie/internal/crypto"
 	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
 )
 
@@ -119,6 +120,22 @@ type Server struct {
 	// log line instead of being retained by anything pretending to be a
 	// queue. The queue item replaces this nil when it lands.
 	offline OfflineSink
+
+	// keys is ts:queue-sealed-box's TOFU pin store (crypto.Keystore): the
+	// coordinator's record of which X25519 public key belongs to which
+	// device, fed by PublicKeyAnnounce frames and served back as
+	// PublicKeyDirectory snapshots. Public keys ONLY — this process never
+	// holds any peer's private half, which is precisely why it can seal
+	// queued payloads it can never open. Nil disables key distribution;
+	// wired in production via WireKeys before Serve.
+	keys *crypto.Keystore
+
+	// confirm is the changed-key confirmation gate handed to the keystore's
+	// Authorize on every announce. Nil — this binary's only mode — means a
+	// changed key for a known peer is REFUSED: headless refusal is the safe
+	// default, and no flag anywhere flips acceptance on (keys.go explains
+	// the manual recovery path).
+	confirm crypto.ConfirmFunc
 
 	// routes maps each connected device's resolved name to its live
 	// connection writers; routing.go owns the semantics. Guarded by routesMu.
@@ -662,6 +679,35 @@ func (s *Server) dispatch(ctx context.Context, out *connWriter, id tsauth.Identi
 	case *walkiev1.Envelope_QueueAck:
 		return s.handleQueueAck(id, payload.QueueAck)
 
+	case *walkiev1.Envelope_PublicKeyAnnounce:
+		// ts:queue-sealed-box: the client publishes its X25519 identity
+		// public key; the coordinator applies the TOFU rule to it (keys.go).
+		return s.handleKeyAnnounce(ctx, out, id, payload.PublicKeyAnnounce)
+
+	case *walkiev1.Envelope_PublicKeyDirectory:
+		// Coordinator → client only (schema field doc). A client sending it
+		// is speaking backwards — ignored quietly like any payload this side
+		// does not accept, never a connection-killer: mixed-fleet tolerance
+		// (adr:003) covers direction confusion too.
+		s.logger.Debug("payload ignored: wrong direction",
+			slog.String("node_name", id.NodeName),
+			slog.String("payload_type", "PublicKeyDirectory"),
+		)
+		return true
+
+	case *walkiev1.Envelope_SealedDelivery:
+		// Coordinator → client only, and only on queue replay (schema field
+		// doc). A client sending opaque ciphertext AT the coordinator is
+		// speaking backwards — and even if it were not, this process could
+		// do nothing with a box it structurally cannot open (adr:004: it
+		// holds no private half of any peer). Ignored quietly, same posture
+		// as the wrong-direction directory above; the connection survives.
+		s.logger.Debug("payload ignored: wrong direction",
+			slog.String("node_name", id.NodeName),
+			slog.String("payload_type", "SealedDelivery"),
+		)
+		return true
+
 	default:
 		// Structured, content-free: the payload TYPE name is protocol
 		// metadata, safe to log; message_id identifies without disclosing.
@@ -810,6 +856,24 @@ func (s *Server) handleHello(ctx context.Context, out *connWriter, id tsauth.Ide
 			slog.Uint64("first_position", deliveries[0].Position),
 			slog.Uint64("last_position", deliveries[len(deliveries)-1].Position),
 		)
+	}
+
+	// Key directory snapshot (ts:queue-sealed-box), AFTER the drain frames:
+	// pending_count promises exactly what follows the HelloAck, and inserting
+	// a directory between them would break that adjacency. Snapshot-at-hello
+	// is the schema's prescribed delivery shape — the consumer may assume a
+	// complete device→key table from here on. Absent when no keystore is
+	// wired (older rigs, tests of other machinery).
+	//
+	// Ordering with sealed deliveries, stated because it looks dangerous and
+	// is not: a SealedDelivery frame arrives BEFORE the directory snapshot,
+	// but the recipient never needed the directory to read its mail — it
+	// opens each box with its OWN local identity key (generated on first
+	// run, announced separately). The directory exists for SENDERS choosing
+	// keys at ingress time, coordinator-side; drain-then-directory costs the
+	// recipient nothing.
+	if dirEnv := s.directoryEnvelope(); dirEnv != nil {
+		out.write(ctx, dirEnv)
 	}
 	return true
 }

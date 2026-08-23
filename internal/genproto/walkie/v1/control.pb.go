@@ -230,6 +230,7 @@ type Envelope struct {
 	//	*Envelope_PublicKeyAnnounce
 	//	*Envelope_PublicKeyDirectory
 	//	*Envelope_ProtocolError
+	//	*Envelope_SealedDelivery
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -435,6 +436,15 @@ func (x *Envelope) GetProtocolError() *ProtocolError {
 	return nil
 }
 
+func (x *Envelope) GetSealedDelivery() *SealedDelivery {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_SealedDelivery); ok {
+			return x.SealedDelivery
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Payload interface {
 	isEnvelope_Payload()
 }
@@ -499,6 +509,10 @@ type Envelope_ProtocolError struct {
 	ProtocolError *ProtocolError `protobuf:"bytes,24,opt,name=protocol_error,json=protocolError,proto3,oneof"`
 }
 
+type Envelope_SealedDelivery struct {
+	SealedDelivery *SealedDelivery `protobuf:"bytes,25,opt,name=sealed_delivery,json=sealedDelivery,proto3,oneof"`
+}
+
 func (*Envelope_Hello) isEnvelope_Payload() {}
 
 func (*Envelope_HelloAck) isEnvelope_Payload() {}
@@ -528,6 +542,101 @@ func (*Envelope_PublicKeyAnnounce) isEnvelope_Payload() {}
 func (*Envelope_PublicKeyDirectory) isEnvelope_Payload() {}
 
 func (*Envelope_ProtocolError) isEnvelope_Payload() {}
+
+func (*Envelope_SealedDelivery) isEnvelope_Payload() {}
+
+// SealedDelivery carries one queued message to its recipient as OPAQUE
+// sealed-box bytes. Coordinator → client only, and only on queue replay
+// (Envelope.position > 0): live traffic never takes this shape.
+//
+// Owning work item:
+//
+//	eka get walkie/ts:queue-sealed-box
+//
+// # Who can read what, stated once
+//
+// The coordinator CANNOT open this payload — it sealed the box to the
+// recipient's TOFU-pinned X25519 public key (PublicKeyAnnounce /
+// PublicKeyDirectory) and holds no private half of anything. Only the holder
+// of the recipient's identity key can Open it (X25519 + XChaCha20-Poly1305,
+// adr:004-security-model); the recipient decrypts with its OWN local key, so
+// no pre-delivery key exchange is needed and the drain-before-directory frame
+// order in handleHello costs nothing.
+//
+// Inside the box rides the ORIGINAL stamped envelope verbatim — message_id,
+// sent_at, received_at, the text payload — which is why this wrapper carries
+// none of them: the ULID dedup key and both timestamps travel encrypted, and
+// the outer envelope deliberately exposes nothing but the position (the ack
+// handle) and the ciphertext. A box that fails authentication is rejected
+// WHOLE by the recipient — loud, content-free error, never partial content
+// (AEAD guarantees there is no partial plaintext to act on). Losing the
+// recipient's key forfeits every box sealed to it; there is no recovery.
+//
+// # Additive evolution (adr:003 mixed-fleet rule)
+//
+// This field was added as number 25 with NO renumbering: an older receiver
+// that does not know it ignores the frame like any unknown field and keeps
+// the connection — the queued message is invisible to it until it upgrades,
+// never fatal. Old receivers must simply not be the intended recipient of a
+// fleet that seals; a mixed fleet degrades to "old client misses sealed
+// mail", which is honest, rather than to connection churn.
+//
+// # Bootstrap honesty (the plaintext-at-rest rule)
+//
+// A message enqueues SEALED only if the recipient's key was already pinned
+// when it arrived. Messages queued before the recipient's first
+// PublicKeyAnnounce rest PLAINTEXT (still TTL- and cap-bounded) and replay
+// as their ordinary payload shape — they are NOT dropped and NOT encrypted
+// to nothing. Pins are never applied retroactively to stored rows. Clients
+// announce their key on first connect precisely to keep that window one
+// connection wide.
+type SealedDelivery struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// ciphertext is the complete sealed box: version byte || ephemeral X25519
+	// public key || nonce || XChaCha20-Poly1305 ciphertext+tag. Opaque to every
+	// intermediate hop by construction; malformed or tampered bytes fail
+	// authentication at the recipient and are dropped whole.
+	Ciphertext    []byte `protobuf:"bytes,1,opt,name=ciphertext,proto3" json:"ciphertext,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SealedDelivery) Reset() {
+	*x = SealedDelivery{}
+	mi := &file_walkie_v1_control_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SealedDelivery) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SealedDelivery) ProtoMessage() {}
+
+func (x *SealedDelivery) ProtoReflect() protoreflect.Message {
+	mi := &file_walkie_v1_control_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SealedDelivery.ProtoReflect.Descriptor instead.
+func (*SealedDelivery) Descriptor() ([]byte, []int) {
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *SealedDelivery) GetCiphertext() []byte {
+	if x != nil {
+		return x.Ciphertext
+	}
+	return nil
+}
 
 // Hello opens a connection.
 //
@@ -582,7 +691,7 @@ type Hello struct {
 
 func (x *Hello) Reset() {
 	*x = Hello{}
-	mi := &file_walkie_v1_control_proto_msgTypes[1]
+	mi := &file_walkie_v1_control_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -594,7 +703,7 @@ func (x *Hello) String() string {
 func (*Hello) ProtoMessage() {}
 
 func (x *Hello) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[1]
+	mi := &file_walkie_v1_control_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -607,7 +716,7 @@ func (x *Hello) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Hello.ProtoReflect.Descriptor instead.
 func (*Hello) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{1}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Hello) GetClientVersion() string {
@@ -655,7 +764,7 @@ type HelloAck struct {
 
 func (x *HelloAck) Reset() {
 	*x = HelloAck{}
-	mi := &file_walkie_v1_control_proto_msgTypes[2]
+	mi := &file_walkie_v1_control_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -667,7 +776,7 @@ func (x *HelloAck) String() string {
 func (*HelloAck) ProtoMessage() {}
 
 func (x *HelloAck) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[2]
+	mi := &file_walkie_v1_control_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -680,7 +789,7 @@ func (x *HelloAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HelloAck.ProtoReflect.Descriptor instead.
 func (*HelloAck) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{2}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *HelloAck) GetDevice() string {
@@ -726,7 +835,7 @@ type Heartbeat struct {
 
 func (x *Heartbeat) Reset() {
 	*x = Heartbeat{}
-	mi := &file_walkie_v1_control_proto_msgTypes[3]
+	mi := &file_walkie_v1_control_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -738,7 +847,7 @@ func (x *Heartbeat) String() string {
 func (*Heartbeat) ProtoMessage() {}
 
 func (x *Heartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[3]
+	mi := &file_walkie_v1_control_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -751,7 +860,7 @@ func (x *Heartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
 func (*Heartbeat) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{3}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{4}
 }
 
 // PresenceUpdate tells a connected client how another device's presence
@@ -786,7 +895,7 @@ type PresenceUpdate struct {
 
 func (x *PresenceUpdate) Reset() {
 	*x = PresenceUpdate{}
-	mi := &file_walkie_v1_control_proto_msgTypes[4]
+	mi := &file_walkie_v1_control_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -798,7 +907,7 @@ func (x *PresenceUpdate) String() string {
 func (*PresenceUpdate) ProtoMessage() {}
 
 func (x *PresenceUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[4]
+	mi := &file_walkie_v1_control_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -811,7 +920,7 @@ func (x *PresenceUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresenceUpdate.ProtoReflect.Descriptor instead.
 func (*PresenceUpdate) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{4}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PresenceUpdate) GetDevice() string {
@@ -864,7 +973,7 @@ type PresenceStatusChange struct {
 
 func (x *PresenceStatusChange) Reset() {
 	*x = PresenceStatusChange{}
-	mi := &file_walkie_v1_control_proto_msgTypes[5]
+	mi := &file_walkie_v1_control_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -876,7 +985,7 @@ func (x *PresenceStatusChange) String() string {
 func (*PresenceStatusChange) ProtoMessage() {}
 
 func (x *PresenceStatusChange) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[5]
+	mi := &file_walkie_v1_control_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -889,7 +998,7 @@ func (x *PresenceStatusChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresenceStatusChange.ProtoReflect.Descriptor instead.
 func (*PresenceStatusChange) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{5}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *PresenceStatusChange) GetStatus() string {
@@ -938,7 +1047,7 @@ type DirectMessage struct {
 
 func (x *DirectMessage) Reset() {
 	*x = DirectMessage{}
-	mi := &file_walkie_v1_control_proto_msgTypes[6]
+	mi := &file_walkie_v1_control_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -950,7 +1059,7 @@ func (x *DirectMessage) String() string {
 func (*DirectMessage) ProtoMessage() {}
 
 func (x *DirectMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[6]
+	mi := &file_walkie_v1_control_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -963,7 +1072,7 @@ func (x *DirectMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DirectMessage.ProtoReflect.Descriptor instead.
 func (*DirectMessage) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{6}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *DirectMessage) GetRecipient() string {
@@ -1011,7 +1120,7 @@ type BroadcastMessage struct {
 
 func (x *BroadcastMessage) Reset() {
 	*x = BroadcastMessage{}
-	mi := &file_walkie_v1_control_proto_msgTypes[7]
+	mi := &file_walkie_v1_control_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1023,7 +1132,7 @@ func (x *BroadcastMessage) String() string {
 func (*BroadcastMessage) ProtoMessage() {}
 
 func (x *BroadcastMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[7]
+	mi := &file_walkie_v1_control_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1036,7 +1145,7 @@ func (x *BroadcastMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastMessage.ProtoReflect.Descriptor instead.
 func (*BroadcastMessage) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{7}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *BroadcastMessage) GetBody() string {
@@ -1096,7 +1205,7 @@ type AttachmentOffer struct {
 
 func (x *AttachmentOffer) Reset() {
 	*x = AttachmentOffer{}
-	mi := &file_walkie_v1_control_proto_msgTypes[8]
+	mi := &file_walkie_v1_control_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1108,7 +1217,7 @@ func (x *AttachmentOffer) String() string {
 func (*AttachmentOffer) ProtoMessage() {}
 
 func (x *AttachmentOffer) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[8]
+	mi := &file_walkie_v1_control_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1121,7 +1230,7 @@ func (x *AttachmentOffer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachmentOffer.ProtoReflect.Descriptor instead.
 func (*AttachmentOffer) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{8}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *AttachmentOffer) GetAttachmentId() string {
@@ -1182,7 +1291,7 @@ type AttachmentChunk struct {
 
 func (x *AttachmentChunk) Reset() {
 	*x = AttachmentChunk{}
-	mi := &file_walkie_v1_control_proto_msgTypes[9]
+	mi := &file_walkie_v1_control_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1194,7 +1303,7 @@ func (x *AttachmentChunk) String() string {
 func (*AttachmentChunk) ProtoMessage() {}
 
 func (x *AttachmentChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[9]
+	mi := &file_walkie_v1_control_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1207,7 +1316,7 @@ func (x *AttachmentChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachmentChunk.ProtoReflect.Descriptor instead.
 func (*AttachmentChunk) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{9}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *AttachmentChunk) GetAttachmentId() string {
@@ -1252,7 +1361,7 @@ type AttachmentAck struct {
 
 func (x *AttachmentAck) Reset() {
 	*x = AttachmentAck{}
-	mi := &file_walkie_v1_control_proto_msgTypes[10]
+	mi := &file_walkie_v1_control_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1264,7 +1373,7 @@ func (x *AttachmentAck) String() string {
 func (*AttachmentAck) ProtoMessage() {}
 
 func (x *AttachmentAck) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[10]
+	mi := &file_walkie_v1_control_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1277,7 +1386,7 @@ func (x *AttachmentAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachmentAck.ProtoReflect.Descriptor instead.
 func (*AttachmentAck) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{10}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *AttachmentAck) GetAttachmentId() string {
@@ -1313,7 +1422,7 @@ type QueueAck struct {
 
 func (x *QueueAck) Reset() {
 	*x = QueueAck{}
-	mi := &file_walkie_v1_control_proto_msgTypes[11]
+	mi := &file_walkie_v1_control_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1325,7 +1434,7 @@ func (x *QueueAck) String() string {
 func (*QueueAck) ProtoMessage() {}
 
 func (x *QueueAck) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[11]
+	mi := &file_walkie_v1_control_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1338,7 +1447,7 @@ func (x *QueueAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueueAck.ProtoReflect.Descriptor instead.
 func (*QueueAck) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{11}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *QueueAck) GetAcknowledgedPosition() uint64 {
@@ -1371,7 +1480,7 @@ type QueueRefused struct {
 
 func (x *QueueRefused) Reset() {
 	*x = QueueRefused{}
-	mi := &file_walkie_v1_control_proto_msgTypes[12]
+	mi := &file_walkie_v1_control_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1383,7 +1492,7 @@ func (x *QueueRefused) String() string {
 func (*QueueRefused) ProtoMessage() {}
 
 func (x *QueueRefused) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[12]
+	mi := &file_walkie_v1_control_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1396,7 +1505,7 @@ func (x *QueueRefused) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueueRefused.ProtoReflect.Descriptor instead.
 func (*QueueRefused) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{12}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *QueueRefused) GetReason() QueueRefusalReason {
@@ -1435,7 +1544,7 @@ type PublicKeyAnnounce struct {
 
 func (x *PublicKeyAnnounce) Reset() {
 	*x = PublicKeyAnnounce{}
-	mi := &file_walkie_v1_control_proto_msgTypes[13]
+	mi := &file_walkie_v1_control_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1447,7 +1556,7 @@ func (x *PublicKeyAnnounce) String() string {
 func (*PublicKeyAnnounce) ProtoMessage() {}
 
 func (x *PublicKeyAnnounce) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[13]
+	mi := &file_walkie_v1_control_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1460,7 +1569,7 @@ func (x *PublicKeyAnnounce) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublicKeyAnnounce.ProtoReflect.Descriptor instead.
 func (*PublicKeyAnnounce) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{13}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *PublicKeyAnnounce) GetPublicKey() []byte {
@@ -1483,7 +1592,7 @@ type PublicKeyEntry struct {
 
 func (x *PublicKeyEntry) Reset() {
 	*x = PublicKeyEntry{}
-	mi := &file_walkie_v1_control_proto_msgTypes[14]
+	mi := &file_walkie_v1_control_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1495,7 +1604,7 @@ func (x *PublicKeyEntry) String() string {
 func (*PublicKeyEntry) ProtoMessage() {}
 
 func (x *PublicKeyEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[14]
+	mi := &file_walkie_v1_control_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1508,7 +1617,7 @@ func (x *PublicKeyEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublicKeyEntry.ProtoReflect.Descriptor instead.
 func (*PublicKeyEntry) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{14}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *PublicKeyEntry) GetDevice() string {
@@ -1551,7 +1660,7 @@ type PublicKeyDirectory struct {
 
 func (x *PublicKeyDirectory) Reset() {
 	*x = PublicKeyDirectory{}
-	mi := &file_walkie_v1_control_proto_msgTypes[15]
+	mi := &file_walkie_v1_control_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1563,7 +1672,7 @@ func (x *PublicKeyDirectory) String() string {
 func (*PublicKeyDirectory) ProtoMessage() {}
 
 func (x *PublicKeyDirectory) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[15]
+	mi := &file_walkie_v1_control_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1576,7 +1685,7 @@ func (x *PublicKeyDirectory) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublicKeyDirectory.ProtoReflect.Descriptor instead.
 func (*PublicKeyDirectory) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{15}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *PublicKeyDirectory) GetEntries() []*PublicKeyEntry {
@@ -1612,7 +1721,7 @@ type ProtocolError struct {
 
 func (x *ProtocolError) Reset() {
 	*x = ProtocolError{}
-	mi := &file_walkie_v1_control_proto_msgTypes[16]
+	mi := &file_walkie_v1_control_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1624,7 +1733,7 @@ func (x *ProtocolError) String() string {
 func (*ProtocolError) ProtoMessage() {}
 
 func (x *ProtocolError) ProtoReflect() protoreflect.Message {
-	mi := &file_walkie_v1_control_proto_msgTypes[16]
+	mi := &file_walkie_v1_control_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1637,7 +1746,7 @@ func (x *ProtocolError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProtocolError.ProtoReflect.Descriptor instead.
 func (*ProtocolError) Descriptor() ([]byte, []int) {
-	return file_walkie_v1_control_proto_rawDescGZIP(), []int{16}
+	return file_walkie_v1_control_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ProtocolError) GetCode() ProtocolErrorCode {
@@ -1665,7 +1774,7 @@ var File_walkie_v1_control_proto protoreflect.FileDescriptor
 
 const file_walkie_v1_control_proto_rawDesc = "" +
 	"\n" +
-	"\x17walkie/v1/control.proto\x12\twalkie.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb3\t\n" +
+	"\x17walkie/v1/control.proto\x12\twalkie.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf9\t\n" +
 	"\bEnvelope\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\tR\tmessageId\x123\n" +
@@ -1688,8 +1797,13 @@ const file_walkie_v1_control_proto_rawDesc = "" +
 	"\rqueue_refused\x18\x15 \x01(\v2\x17.walkie.v1.QueueRefusedH\x00R\fqueueRefused\x12N\n" +
 	"\x13public_key_announce\x18\x16 \x01(\v2\x1c.walkie.v1.PublicKeyAnnounceH\x00R\x11publicKeyAnnounce\x12Q\n" +
 	"\x14public_key_directory\x18\x17 \x01(\v2\x1d.walkie.v1.PublicKeyDirectoryH\x00R\x12publicKeyDirectory\x12A\n" +
-	"\x0eprotocol_error\x18\x18 \x01(\v2\x18.walkie.v1.ProtocolErrorH\x00R\rprotocolErrorB\t\n" +
-	"\apayload\"\x89\x01\n" +
+	"\x0eprotocol_error\x18\x18 \x01(\v2\x18.walkie.v1.ProtocolErrorH\x00R\rprotocolError\x12D\n" +
+	"\x0fsealed_delivery\x18\x19 \x01(\v2\x19.walkie.v1.SealedDeliveryH\x00R\x0esealedDeliveryB\t\n" +
+	"\apayload\"0\n" +
+	"\x0eSealedDelivery\x12\x1e\n" +
+	"\n" +
+	"ciphertext\x18\x01 \x01(\fR\n" +
+	"ciphertext\"\x89\x01\n" +
 	"\x05Hello\x12%\n" +
 	"\x0eclient_version\x18\x01 \x01(\tR\rclientVersion\x12.\n" +
 	"\x13last_acked_position\x18\x02 \x01(\x04R\x11lastAckedPosition\x12)\n" +
@@ -1775,59 +1889,61 @@ func file_walkie_v1_control_proto_rawDescGZIP() []byte {
 }
 
 var file_walkie_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_walkie_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_walkie_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_walkie_v1_control_proto_goTypes = []any{
 	(PresenceState)(0),            // 0: walkie.v1.PresenceState
 	(QueueRefusalReason)(0),       // 1: walkie.v1.QueueRefusalReason
 	(ProtocolErrorCode)(0),        // 2: walkie.v1.ProtocolErrorCode
 	(*Envelope)(nil),              // 3: walkie.v1.Envelope
-	(*Hello)(nil),                 // 4: walkie.v1.Hello
-	(*HelloAck)(nil),              // 5: walkie.v1.HelloAck
-	(*Heartbeat)(nil),             // 6: walkie.v1.Heartbeat
-	(*PresenceUpdate)(nil),        // 7: walkie.v1.PresenceUpdate
-	(*PresenceStatusChange)(nil),  // 8: walkie.v1.PresenceStatusChange
-	(*DirectMessage)(nil),         // 9: walkie.v1.DirectMessage
-	(*BroadcastMessage)(nil),      // 10: walkie.v1.BroadcastMessage
-	(*AttachmentOffer)(nil),       // 11: walkie.v1.AttachmentOffer
-	(*AttachmentChunk)(nil),       // 12: walkie.v1.AttachmentChunk
-	(*AttachmentAck)(nil),         // 13: walkie.v1.AttachmentAck
-	(*QueueAck)(nil),              // 14: walkie.v1.QueueAck
-	(*QueueRefused)(nil),          // 15: walkie.v1.QueueRefused
-	(*PublicKeyAnnounce)(nil),     // 16: walkie.v1.PublicKeyAnnounce
-	(*PublicKeyEntry)(nil),        // 17: walkie.v1.PublicKeyEntry
-	(*PublicKeyDirectory)(nil),    // 18: walkie.v1.PublicKeyDirectory
-	(*ProtocolError)(nil),         // 19: walkie.v1.ProtocolError
-	(*timestamppb.Timestamp)(nil), // 20: google.protobuf.Timestamp
+	(*SealedDelivery)(nil),        // 4: walkie.v1.SealedDelivery
+	(*Hello)(nil),                 // 5: walkie.v1.Hello
+	(*HelloAck)(nil),              // 6: walkie.v1.HelloAck
+	(*Heartbeat)(nil),             // 7: walkie.v1.Heartbeat
+	(*PresenceUpdate)(nil),        // 8: walkie.v1.PresenceUpdate
+	(*PresenceStatusChange)(nil),  // 9: walkie.v1.PresenceStatusChange
+	(*DirectMessage)(nil),         // 10: walkie.v1.DirectMessage
+	(*BroadcastMessage)(nil),      // 11: walkie.v1.BroadcastMessage
+	(*AttachmentOffer)(nil),       // 12: walkie.v1.AttachmentOffer
+	(*AttachmentChunk)(nil),       // 13: walkie.v1.AttachmentChunk
+	(*AttachmentAck)(nil),         // 14: walkie.v1.AttachmentAck
+	(*QueueAck)(nil),              // 15: walkie.v1.QueueAck
+	(*QueueRefused)(nil),          // 16: walkie.v1.QueueRefused
+	(*PublicKeyAnnounce)(nil),     // 17: walkie.v1.PublicKeyAnnounce
+	(*PublicKeyEntry)(nil),        // 18: walkie.v1.PublicKeyEntry
+	(*PublicKeyDirectory)(nil),    // 19: walkie.v1.PublicKeyDirectory
+	(*ProtocolError)(nil),         // 20: walkie.v1.ProtocolError
+	(*timestamppb.Timestamp)(nil), // 21: google.protobuf.Timestamp
 }
 var file_walkie_v1_control_proto_depIdxs = []int32{
-	20, // 0: walkie.v1.Envelope.sent_at:type_name -> google.protobuf.Timestamp
-	20, // 1: walkie.v1.Envelope.received_at:type_name -> google.protobuf.Timestamp
-	4,  // 2: walkie.v1.Envelope.hello:type_name -> walkie.v1.Hello
-	5,  // 3: walkie.v1.Envelope.hello_ack:type_name -> walkie.v1.HelloAck
-	6,  // 4: walkie.v1.Envelope.heartbeat:type_name -> walkie.v1.Heartbeat
-	7,  // 5: walkie.v1.Envelope.presence_update:type_name -> walkie.v1.PresenceUpdate
-	8,  // 6: walkie.v1.Envelope.presence_status_change:type_name -> walkie.v1.PresenceStatusChange
-	9,  // 7: walkie.v1.Envelope.direct_message:type_name -> walkie.v1.DirectMessage
-	10, // 8: walkie.v1.Envelope.broadcast_message:type_name -> walkie.v1.BroadcastMessage
-	11, // 9: walkie.v1.Envelope.attachment_offer:type_name -> walkie.v1.AttachmentOffer
-	12, // 10: walkie.v1.Envelope.attachment_chunk:type_name -> walkie.v1.AttachmentChunk
-	13, // 11: walkie.v1.Envelope.attachment_ack:type_name -> walkie.v1.AttachmentAck
-	14, // 12: walkie.v1.Envelope.queue_ack:type_name -> walkie.v1.QueueAck
-	15, // 13: walkie.v1.Envelope.queue_refused:type_name -> walkie.v1.QueueRefused
-	16, // 14: walkie.v1.Envelope.public_key_announce:type_name -> walkie.v1.PublicKeyAnnounce
-	18, // 15: walkie.v1.Envelope.public_key_directory:type_name -> walkie.v1.PublicKeyDirectory
-	19, // 16: walkie.v1.Envelope.protocol_error:type_name -> walkie.v1.ProtocolError
-	20, // 17: walkie.v1.HelloAck.received_at:type_name -> google.protobuf.Timestamp
-	0,  // 18: walkie.v1.PresenceUpdate.state:type_name -> walkie.v1.PresenceState
-	20, // 19: walkie.v1.PresenceUpdate.last_seen:type_name -> google.protobuf.Timestamp
-	1,  // 20: walkie.v1.QueueRefused.reason:type_name -> walkie.v1.QueueRefusalReason
-	17, // 21: walkie.v1.PublicKeyDirectory.entries:type_name -> walkie.v1.PublicKeyEntry
-	2,  // 22: walkie.v1.ProtocolError.code:type_name -> walkie.v1.ProtocolErrorCode
-	23, // [23:23] is the sub-list for method output_type
-	23, // [23:23] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	21, // 0: walkie.v1.Envelope.sent_at:type_name -> google.protobuf.Timestamp
+	21, // 1: walkie.v1.Envelope.received_at:type_name -> google.protobuf.Timestamp
+	5,  // 2: walkie.v1.Envelope.hello:type_name -> walkie.v1.Hello
+	6,  // 3: walkie.v1.Envelope.hello_ack:type_name -> walkie.v1.HelloAck
+	7,  // 4: walkie.v1.Envelope.heartbeat:type_name -> walkie.v1.Heartbeat
+	8,  // 5: walkie.v1.Envelope.presence_update:type_name -> walkie.v1.PresenceUpdate
+	9,  // 6: walkie.v1.Envelope.presence_status_change:type_name -> walkie.v1.PresenceStatusChange
+	10, // 7: walkie.v1.Envelope.direct_message:type_name -> walkie.v1.DirectMessage
+	11, // 8: walkie.v1.Envelope.broadcast_message:type_name -> walkie.v1.BroadcastMessage
+	12, // 9: walkie.v1.Envelope.attachment_offer:type_name -> walkie.v1.AttachmentOffer
+	13, // 10: walkie.v1.Envelope.attachment_chunk:type_name -> walkie.v1.AttachmentChunk
+	14, // 11: walkie.v1.Envelope.attachment_ack:type_name -> walkie.v1.AttachmentAck
+	15, // 12: walkie.v1.Envelope.queue_ack:type_name -> walkie.v1.QueueAck
+	16, // 13: walkie.v1.Envelope.queue_refused:type_name -> walkie.v1.QueueRefused
+	17, // 14: walkie.v1.Envelope.public_key_announce:type_name -> walkie.v1.PublicKeyAnnounce
+	19, // 15: walkie.v1.Envelope.public_key_directory:type_name -> walkie.v1.PublicKeyDirectory
+	20, // 16: walkie.v1.Envelope.protocol_error:type_name -> walkie.v1.ProtocolError
+	4,  // 17: walkie.v1.Envelope.sealed_delivery:type_name -> walkie.v1.SealedDelivery
+	21, // 18: walkie.v1.HelloAck.received_at:type_name -> google.protobuf.Timestamp
+	0,  // 19: walkie.v1.PresenceUpdate.state:type_name -> walkie.v1.PresenceState
+	21, // 20: walkie.v1.PresenceUpdate.last_seen:type_name -> google.protobuf.Timestamp
+	1,  // 21: walkie.v1.QueueRefused.reason:type_name -> walkie.v1.QueueRefusalReason
+	18, // 22: walkie.v1.PublicKeyDirectory.entries:type_name -> walkie.v1.PublicKeyEntry
+	2,  // 23: walkie.v1.ProtocolError.code:type_name -> walkie.v1.ProtocolErrorCode
+	24, // [24:24] is the sub-list for method output_type
+	24, // [24:24] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_walkie_v1_control_proto_init() }
@@ -1851,6 +1967,7 @@ func file_walkie_v1_control_proto_init() {
 		(*Envelope_PublicKeyAnnounce)(nil),
 		(*Envelope_PublicKeyDirectory)(nil),
 		(*Envelope_ProtocolError)(nil),
+		(*Envelope_SealedDelivery)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1858,7 +1975,7 @@ func file_walkie_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_walkie_v1_control_proto_rawDesc), len(file_walkie_v1_control_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   17,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

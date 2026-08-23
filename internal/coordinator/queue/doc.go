@@ -32,16 +32,20 @@
 // # Encryption
 //
 // Payloads resting here are outside the WireGuard tunnel's protection, which is
-// exactly why adr:004-security-model puts them in scope for the sealed box. This
-// package will store ciphertext once ts:queue-sealed-box lands; see
-// internal/crypto. At that point a test should read the stored bytes directly
-// and assert they are not plaintext.
+// exactly why adr:004-security-model puts them in scope for the sealed box. See
+// internal/crypto and [AtRest] (sealed.go) for the construction and for who
+// decrypts what: bodies seal TO THE RECIPIENT's pinned public key, so this
+// package — and the coordinator holding it — can store what it cannot read.
 //
-// State under sto:offline-queue (this item): bodies are stored OPAQUE — the
-// queue marshals the stamped envelope verbatim into one BLOB and never opens
-// it on any path other than replay, and nothing indexes or searches on
-// content. The bytes are still PLAINTEXT until ts:queue-sealed-box lands;
-// that item swaps ciphertext for plaintext at exactly the two boundary points
-// this shape provides (marshal-before-store, unmarshal-after-load) without
-// touching this logic or the schema.
+// State under ts:queue-sealed-box: ACTIVE. The swap happened at exactly the two
+// boundary points this shape reserved (sealForStorage before the INSERT,
+// deliveryFromStorage after the SELECT), without touching this logic or the
+// schema. Production wires [NewSealed] over [NewKeystoreSealer]: Enqueue seals
+// to the recipient's pinned key, Resume ships opaque SealedDelivery frames,
+// and the recipient's client opens each box with its own identity key — a box
+// that fails authentication drops whole THERE, loudly, never partially
+// processed, and its position is acked so a forfeited message cannot freeze
+// the ack high-water behind it. A recipient with no pinned key yet rests
+// plaintext under the documented bootstrap rule (sealed.go): logged per hold,
+// never dropped, never encrypted to nothing; pins apply forward only.
 package queue

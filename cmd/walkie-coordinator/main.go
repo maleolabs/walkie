@@ -59,6 +59,7 @@ import (
 	"github.com/maleolabs/walkie/internal/coordinator/presence"
 	"github.com/maleolabs/walkie/internal/coordinator/queue"
 	"github.com/maleolabs/walkie/internal/coordinator/tsauth"
+	"github.com/maleolabs/walkie/internal/crypto"
 	"github.com/maleolabs/walkie/internal/store"
 )
 
@@ -129,13 +130,32 @@ func run(logger *slog.Logger) error {
 	}
 	defer tracker.Close()
 
-	// The offline queue (sto:offline-queue): bounded retention over the same
-	// store, wired as the server's OfflineSink. From here on, a message for
-	// an offline device is HELD — with a TTL, a size cap that refuses
-	// explicitly, and survival across this process's restarts — instead of
-	// the skeleton's loud drop. Registered AFTER the tracker's defer so
-	// Close order runs tracker-then-queue-then-store.
-	inbox, err := queue.New(st, clock.Real(), cfg.queueTTL, cfg.queueMaxSize, logger)
+	// The TOFU keystore (ts:queue-sealed-box): pins each device's X25519
+	// public key on first announce, serves the table as PublicKeyDirectory
+	// snapshots, and REFUSES a changed key for a known peer — nil confirmer,
+	// because this process is headless and assumed consent is not consent.
+	// Recovery from a refused change is manual by design: verify fingerprints
+	// out of band, then correct the pin file by hand with the process
+	// stopped. Opened BEFORE the offline queue, because the queue's sealing
+	// seam looks recipient pins up at enqueue time.
+	keys, err := crypto.OpenKeystore(filepath.Join(cfg.stateDir, "peer-keys.json"), clock.Real(), logger)
+	if err != nil {
+		return fmt.Errorf("open peer key keystore: %w", err)
+	}
+	defer keys.Close()
+
+	// The offline queue (sto:offline-queue), SEALED (ts:queue-sealed-box):
+	// bounded retention over the same store, wired as the server's
+	// OfflineSink through queue.NewSealed. From here on, a message for an
+	// offline device is HELD ENCRYPTED whenever the recipient's key is
+	// pinned — sealed to that pinned public key with X25519 +
+	// XChaCha20-Poly1305 (adr:004), stored as ciphertext this process cannot
+	// read, and replayed as opaque SealedDelivery frames the recipient opens
+	// with its own identity key. A recipient that has not announced a key yet
+	// has no pin to seal to: its messages rest plaintext under the documented
+	// bootstrap rule (queue.AtRest), logged per hold, never dropped. Close
+	// order stays tracker-then-queue-then-store.
+	inbox, err := queue.NewSealed(st, clock.Real(), cfg.queueTTL, cfg.queueMaxSize, logger, queue.NewKeystoreSealer(keys, logger))
 	if err != nil {
 		return fmt.Errorf("start offline queue: %w", err)
 	}
@@ -187,7 +207,10 @@ func run(logger *slog.Logger) error {
 	// The queue is the OfflineSink: holds for offline devices, drains on
 	// Hello with the client's last_acked_position, refuses at the size cap
 	// (see OfflineSink and QueueDrain in internal/coordinator/routing.go).
+	// WireKeys attaches the TOFU pin store before Serve — key distribution
+	// and its refusal gate live from this process's first connection.
 	coord := coordinator.NewServer(resolver, clock.Real(), logger, tracker, inbox)
+	coord.WireKeys(keys, nil)
 	if err := coord.Serve(ctx, ln); err != nil {
 		// The drain can genuinely fail: a peer that ignores close frames
 		// outlives the grace window. Saying "shutdown complete" then would

@@ -88,7 +88,61 @@ message Envelope {
     PublicKeyAnnounce public_key_announce = 22;
     PublicKeyDirectory public_key_directory = 23;
     ProtocolError protocol_error = 24;
+    SealedDelivery sealed_delivery = 25;
   }
+}
+
+// SealedDelivery carries one queued message to its recipient as OPAQUE
+// sealed-box bytes. Coordinator → client only, and only on queue replay
+// (Envelope.position > 0): live traffic never takes this shape.
+//
+// Owning work item:
+//
+//   eka get walkie/ts:queue-sealed-box
+//
+// # Who can read what, stated once
+//
+// The coordinator CANNOT open this payload — it sealed the box to the
+// recipient's TOFU-pinned X25519 public key (PublicKeyAnnounce /
+// PublicKeyDirectory) and holds no private half of anything. Only the holder
+// of the recipient's identity key can Open it (X25519 + XChaCha20-Poly1305,
+// adr:004-security-model); the recipient decrypts with its OWN local key, so
+// no pre-delivery key exchange is needed and the drain-before-directory frame
+// order in handleHello costs nothing.
+//
+// Inside the box rides the ORIGINAL stamped envelope verbatim — message_id,
+// sent_at, received_at, the text payload — which is why this wrapper carries
+// none of them: the ULID dedup key and both timestamps travel encrypted, and
+// the outer envelope deliberately exposes nothing but the position (the ack
+// handle) and the ciphertext. A box that fails authentication is rejected
+// WHOLE by the recipient — loud, content-free error, never partial content
+// (AEAD guarantees there is no partial plaintext to act on). Losing the
+// recipient's key forfeits every box sealed to it; there is no recovery.
+//
+// # Additive evolution (adr:003 mixed-fleet rule)
+//
+// This field was added as number 25 with NO renumbering: an older receiver
+// that does not know it ignores the frame like any unknown field and keeps
+// the connection — the queued message is invisible to it until it upgrades,
+// never fatal. Old receivers must simply not be the intended recipient of a
+// fleet that seals; a mixed fleet degrades to "old client misses sealed
+// mail", which is honest, rather than to connection churn.
+//
+// # Bootstrap honesty (the plaintext-at-rest rule)
+//
+// A message enqueues SEALED only if the recipient's key was already pinned
+// when it arrived. Messages queued before the recipient's first
+// PublicKeyAnnounce rest PLAINTEXT (still TTL- and cap-bounded) and replay
+// as their ordinary payload shape — they are NOT dropped and NOT encrypted
+// to nothing. Pins are never applied retroactively to stored rows. Clients
+// announce their key on first connect precisely to keep that window one
+// connection wide.
+message SealedDelivery {
+  // ciphertext is the complete sealed box: version byte || ephemeral X25519
+  // public key || nonce || XChaCha20-Poly1305 ciphertext+tag. Opaque to every
+  // intermediate hop by construction; malformed or tampered bytes fail
+  // authentication at the recipient and are dropped whole.
+  bytes ciphertext = 1;
 }
 
 // Hello opens a connection.

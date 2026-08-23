@@ -42,4 +42,31 @@
 //
 // Fingerprints must be readable aloud, because that is how the team verifies
 // them out of band.
+//
+// # What losing the key costs, and what is NOT implemented
+//
+// Losing a device's identity key forfeits every message queued for that
+// device. Queued payloads are sealed to the recipient's public key; there is
+// no backup, no escrow and no recovery path, and that is the accepted cost
+// recorded in adr:004-security-model (consequence 3: queued messages are
+// transient by design). The key file is stored unencrypted on purpose —
+// encrypting it would require a passphrase, and adr:004 puts no password
+// anywhere in walkie; owner-only permissions are the control.
+//
+// Key rotation and multi-device identity are NOT implemented (adr:004
+// consequence 4, a recorded gap with no phase). A re-installed device
+// generates a fresh key and will correctly trigger the changed-key warning on
+// every peer — that friction is the trust model working.
+//
+// Both statements belong in front of users: ts:docs-quickstart-runbook
+// carries them into the quickstart/runbook, and they are stated here because
+// criterion 7 puts them on this item.
+//
+// # Phase 2 note: the relay fallback
+//
+// adr:001's relay fallback is not built in the MVP. When it lands, payloads
+// crossing the coordinator seal with this same construction — [Seal] against
+// the destination peer's pinned key, opened by its holder — so nothing here
+// changes shape. No relay code belongs in this package; the seam it will
+// consume is exactly the one the offline queue consumes today.
 package crypto
