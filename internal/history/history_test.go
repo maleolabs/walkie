@@ -444,3 +444,61 @@ func TestAppendRefusesMissingIdentity(t *testing.T) {
 		t.Fatal("append without ID succeeded, want error")
 	}
 }
+
+// TestSeqNeverReusedAfterNewestExpires pins migration 4's AUTOINCREMENT
+// rationale: retention can expire the NEWEST row, and plain-rowid reuse after
+// deleting the maximum would hand a later message an expired row's arrival
+// number. Arrival numbers never repeat (migrate.go, history_message). Age is
+// monotone in stored_at, so the sweep that catches the newest catches the
+// older rows with it — the property under test is non-reuse against the
+// deleted maximum, asserted on raw seq.
+func TestSeqNeverReusedAfterNewestExpires(t *testing.T) {
+	clk := testClock()
+	s := mustOpen(t, filepath.Join(t.TempDir(), "history.db"), clk, testOptions())
+	appendID := func(id, peer string) {
+		t.Helper()
+		if err := s.Append(testLocal, msg(id, peer, "body", false, 0, 0)); err != nil {
+			t.Fatalf("append %s: %v", id, err)
+		}
+	}
+	seqOf := func(id string) int64 {
+		t.Helper()
+		var seq int64
+		if err := s.st.DB().QueryRow(
+			`SELECT seq FROM history_message WHERE message_id = ?`, id).Scan(&seq); err != nil {
+			t.Fatalf("seq of %s: %v", id, err)
+		}
+		return seq
+	}
+
+	appendID("m-1", "alice.tail-scale.ts.net.")
+	clk.Advance(testTTL / 2)
+	appendID("m-2", "alice.tail-scale.ts.net.") // newest row
+	seq1, seq2 := seqOf("m-1"), seqOf("m-2")
+
+	// Advancing a full TTL past m-2's storage puts the cutoff exactly at
+	// m-2's stored_at, so the sweep riding this Append expires BOTH rows —
+	// the newest included — before inserting the successor.
+	clk.Advance(testTTL)
+	appendID("m-3", "alice.tail-scale.ts.net.")
+	appendID("m-4", "bob.tail-scale.ts.net.")
+
+	if seq3 := seqOf("m-3"); seq3 <= seq2 {
+		t.Fatalf("m-3 got seq %d, not above expired maximum %d (m-1 was %d) — arrival numbers repeated",
+			seq3, seq2, seq1)
+	}
+	if seq4 := seqOf("m-4"); seq4 <= seqOf("m-3") {
+		t.Fatalf("m-4 seq %d not above m-3's — arrival numbers repeated", seq4)
+	}
+
+	got, err := s.Query(QueryOptions{})
+	if err != nil {
+		t.Fatalf("query all: %v", err)
+	}
+	assertIDs(t, rowsToMsgs(got), "m-3", "m-4")
+	alice, err := s.Conversation(message.ConversationKey("alice.tail-scale.ts.net."))
+	if err != nil {
+		t.Fatalf("query alice: %v", err)
+	}
+	assertIDs(t, alice, "m-3")
+}

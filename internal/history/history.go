@@ -62,6 +62,10 @@ const dirMode os.FileMode = 0o700
 //
 // Expiry and eviction logs carry counts and bounds only — never bodies, never
 // senders (the no-content rule; identifiers identify without disclosing).
+//
+// A Store is safe for concurrent use; cap enforcement is eventually exact
+// under concurrent writers — in-flight appends may transiently exceed
+// MaxMessages before the next sweep corrects.
 type Store struct {
 	st      *store.Store
 	clk     clock.Clock
