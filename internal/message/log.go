@@ -135,12 +135,5 @@ func (l *Log) Conversations() []string {
 // map write; derivation itself reads only msg and the immutable local name,
 // hence the name being about call-site discipline rather than data races.
 func (l *Log) keyLocked(msg Message) string {
-	if msg.IsBroadcast() {
-		return BroadcastConversation
-	}
-	peer := msg.Sender
-	if peer == l.local {
-		peer = msg.Recipient
-	}
-	return ConversationKey(peer)
+	return ConversationKeyFor(l.local, msg)
 }

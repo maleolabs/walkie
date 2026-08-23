@@ -168,6 +168,59 @@ var migrations = []migration{
 )`,
 		},
 	},
+	{
+		version: 4,
+		name:    "create-history-table",
+		// sto:message-history, client half. One row per message this device
+		// sent or received, keyed by the sender-generated ULID — UNIQUE on
+		// message_id makes redelivery idempotent AT REST the same way
+		// message.Log dedups at display: delivery is at-least-once on the
+		// wire (req:text-messaging), so a replayed queue drain must not turn
+		// into a duplicated history line on reopen.
+		//
+		// seq is an AUTOINCREMENT rowid and is LOCAL ARRIVAL ORDER: the order
+		// in which this device observed the messages. It is the only ordering
+		// reopen may rely on, and only WITHIN one conversation (req:text-
+		// messaging provides per-conversation order and explicitly no global
+		// total order). AUTOINCREMENT rather than plain rowid because retention
+		// deletes rows from BOTH ends — TTL expiry can remove the newest row —
+		// and plain rowid reuse after deleting the maximum would hand a new
+		// message the arrival number of an expired one. Arrival numbers never
+		// repeat, so no survivor can ever be mis-ordered against a later
+		// insert.
+		//
+		// Timestamps use the same FIXED 9-digit-fraction UTC layout as
+		// migration 2 (see its comment): sent_at/received_at because the CLI's
+		// time-range query compares them in SQL, stored_at because the TTL
+		// sweep does. RFC3339Nano's trailing-zero trimming would silently
+		// break both comparisons. stored_at is this device's clock at insert —
+		// retention age is a LOCAL fact and must not inherit fleet skew from
+		// either wire timestamp.
+		//
+		// One index only: (conversation, seq) serves the per-conversation
+		// reopen scan, the access path that has a latency budget (criterion 1).
+		// Time-range queries scan; that is fine BY CONSTRUCTION, because
+		// retention bounds the table (TTL plus size cap, enforced in
+		// internal/history) and the fleet is under 20 devices at human rates
+		// (arc:system-overview scale posture). The bodies are PLAINTEXT —
+		// adr:004-security-model accepts unencrypted local history for the
+		// MVP, file permissions stay restrictive via store.Open, and the
+		// limitation is stated in user documentation rather than hidden.
+		stmts: []string{
+			`CREATE TABLE history_message (
+	seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+	message_id   TEXT    NOT NULL UNIQUE,
+	conversation TEXT    NOT NULL,
+	sender       TEXT    NOT NULL,
+	recipient    TEXT    NOT NULL,
+	body         TEXT    NOT NULL,
+	sent_at      TEXT    NOT NULL,
+	received_at  TEXT    NOT NULL,
+	stored_at    TEXT    NOT NULL
+)`,
+			`CREATE INDEX history_message_conversation ON history_message (conversation, seq)`,
+		},
+	},
 }
 
 // migrate brings the database from its recorded version up to len-aware
