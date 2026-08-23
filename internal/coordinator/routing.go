@@ -78,6 +78,12 @@ type QueueDrain interface {
 // addRoute registers one live connection under its resolved device name.
 // Called from serveConn once presence setup is done — see the registration
 // comment there for why teardown order makes this placement load-bearing.
+//
+// The routing table is also the honest source for walkie_connected_devices
+// (ts:observability-baseline): a device is "connected" exactly when it holds
+// at least one live route, so the gauge is recomputed from len(routes) on
+// every mutation rather than maintained as a second counter that could drift
+// from the truth it claims to report.
 func (s *Server) addRoute(device string, w *connWriter) {
 	s.routesMu.Lock()
 	defer s.routesMu.Unlock()
@@ -85,6 +91,7 @@ func (s *Server) addRoute(device string, w *connWriter) {
 		s.routes[device] = make(map[*connWriter]struct{})
 	}
 	s.routes[device][w] = struct{}{}
+	s.metrics.SetConnectedDevices(len(s.routes))
 }
 
 // removeRoute unregisters one connection. Deferred by serveConn so every exit
@@ -101,6 +108,7 @@ func (s *Server) removeRoute(device string, w *connWriter) {
 	if len(set) == 0 {
 		delete(s.routes, device)
 	}
+	s.metrics.SetConnectedDevices(len(s.routes))
 }
 
 // routeTargets snapshots the live connections of one device. More than one
@@ -197,6 +205,10 @@ func (s *Server) handleDirect(ctx context.Context, out *connWriter, id tsauth.Id
 		for _, w := range targets {
 			w.write(ctx, stamped)
 		}
+		// Counted at ingress, once per accepted message — not per delivered
+		// copy (a broadcast fans out to N sockets but is ONE message), so
+		// the scraper's rate means messages/second, not deliveries/second.
+		s.metrics.IncMessages()
 		s.logger.Info("direct message routed",
 			slog.String("sender", sender),
 			slog.String("recipient", dm.GetRecipient()),
@@ -246,6 +258,9 @@ func (s *Server) handleBroadcast(ctx context.Context, out *connWriter, id tsauth
 	for _, w := range targets {
 		w.write(ctx, stamped)
 	}
+	// One broadcast is one message regardless of fanout width — see the
+	// counting note in handleDirect.
+	s.metrics.IncMessages()
 	s.logger.Info("broadcast fanned out",
 		slog.String("sender", sender),
 		slog.Int("recipients", len(targets)),
