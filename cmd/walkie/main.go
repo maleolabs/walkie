@@ -19,6 +19,21 @@
 // against the real coordinator in internal/coordinator's messaging suite and
 // internal/control's WebSocket e2e suite.
 //
+// Two ts:queue-sealed-box duties land with that assembly, both proven in
+// their owning packages and recorded here so they are not re-derived:
+//
+//   - the hub gets this device's X25519 identity key at wiring time
+//     (messagehub.Hub.UseIdentity over crypto.LoadOrCreateIdentity) so
+//     sealed queue deliveries open on arrival — undecryptable ones drop
+//     loudly inside Apply, and their OUTER position is acked regardless of
+//     the verdict (displayed and forfeited are both terminal; withholding
+//     the ack would freeze the queue behind an unreadable frame);
+//   - the client announces its public key (PublicKeyAnnounce) immediately
+//     after its first handshake, because peers can only seal queued mail to
+//     a PINNED key — until that first announce, messages held for this
+//     device rest plaintext on the coordinator under the documented
+//     bootstrap rule (queue.AtRest), and announcing late widens that window.
+//
 // What works today:
 //
 //   - `walkie history` — scriptable query over the local message store

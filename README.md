@@ -138,14 +138,15 @@ fingerprints read aloud over a call: a walkie fingerprint is twenty decimal
 digits in five groups of four (e.g. `4677 6887 2937 2977 8267`), derived from
 SHA-256 of the peer's public key.
 
-Status note: the sealing machinery and its byte-level at-rest proof are
-implemented and tested (`internal/coordinator/queue`, `internal/crypto`); the
-coordinator currently enables key distribution while queue encryption itself
-awaits one additive control-plane schema change — a payload able to carry the
-sealed box to the recipient during queue drain. Until then the coordinator
-stores queued envelopes verbatim, and enabling sealing early would strand
-every queued message undeliverable. The key-loss and no-rotation statements
-above describe the sealed end state and bind the wiring that turns it on.
+Status note: queue encryption is ACTIVE. The coordinator seals every queued
+message to the recipient's pinned key before writing it to its database and
+replays it as an opaque sealed frame the recipient's client opens with its own
+identity key — the coordinator can hold queued messages but structurally cannot
+read them. One honest bootstrap window remains: a message held for a device
+that has never announced a key rests plaintext (still TTL- and size-bounded)
+until that first announce pins the key; pins never apply retroactively, and
+every such hold is logged. The key-loss and no-rotation statements above
+describe exactly this end state.
 
 When the quickstart and runbook land (`ts:docs-quickstart-runbook`), they must
 carry the key-loss statement, the no-rotation statement and the fingerprint
