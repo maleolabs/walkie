@@ -20,7 +20,7 @@
 // and paste the result.
 //
 // Coverage contract (acceptance criterion 2): the table below has one case per
-// oneof payload in Envelope — all fifteen — plus variants that exercise every
+// oneof payload in Envelope — all sixteen — plus variants that exercise every
 // envelope-level field (message_id, sent_at, position, received_at), both
 // PresenceState values, all three ProtocolErrorCode values, the nested
 // repeated PublicKeyEntry, bytes fields, an empty payload message, a wholly
@@ -304,6 +304,27 @@ var goldenEnvelopes = map[string]struct {
 			}}
 		})
 	}, wantHex: "0a1a30314a385a395033513756364d3454384a3257585952354e3643120608da8799d406ba015a0a2a0a066e61732d30311220c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf0a2c0a087468696e6b7061641220d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef"},
+
+	// The sealed-delivery carrier (ts:queue-sealed-box): one queued message
+	// replayed as OPAQUE sealed-box bytes. Position is stamped (queue
+	// replay); message_id/sent_at ride INSIDE the box, so the outer envelope
+	// shows only the ack handle and the ciphertext — the coordinator-blind
+	// shape is itself pinned here. The 73-byte stand-in is the smallest
+	// realistic box: version(1) || ephPub(32) || nonce(24) || tag(16).
+	"sealed_delivery_queue_replay": {build: func() *walkiev1.Envelope {
+		ct := make([]byte, 73)
+		for i := range ct {
+			ct[i] = byte(0xE0 + i%16)
+		}
+		return goldenEnvelope(func(e *walkiev1.Envelope) {
+			e.MessageId = goldenMessageID
+			e.SentAt = goldenSentAt
+			e.Position = 7
+			e.Payload = &walkiev1.Envelope_SealedDelivery{SealedDelivery: &walkiev1.SealedDelivery{
+				Ciphertext: ct,
+			}}
+		})
+	}, wantHex: "0a1a30314a385a395033513756364d3454384a3257585952354e3643120608808799d4061807ca014b0a49e0e1e2e3e4e5e6e7e8e9eaebecedeeefe0e1e2e3e4e5e6e7e8e9eaebecedeeefe0e1e2e3e4e5e6e7e8e9eaebecedeeefe0e1e2e3e4e5e6e7e8e9eaebecedeeefe0e1e2e3e4e5e6e7e8"},
 
 	// The criterion-4 diagnostic itself, pinned as wire bytes: a version
 	// refusal is an ordinary sendable message, not a transport event.

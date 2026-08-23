@@ -159,3 +159,74 @@ func TestNestedPayloadUnknownFieldsPreservedOnRoundTrip(t *testing.T) {
 		t.Fatalf("envelope re-encode dropped or altered nested unknown fields\n got: %x\nwant: %x", reencoded, envelope)
 	}
 }
+
+// TestSealedDeliveryFrameIsOldReceiverCompatible pins the additive-evolution
+// guarantee for the one field ts:queue-sealed-box added to the oneof
+// (Envelope.sealed_delivery = 25): a receiver built BEFORE that field existed
+// must decode a frame carrying it without error, read every known field
+// intact, and re-emit byte-identical output — adr:003's mixed-fleet rule is
+// what lets a sealed queue drain reach a fleet where some clients have not
+// upgraded yet.
+//
+// The frame is assembled BY HAND in the old receiver's terms — field 25 is
+// just an unknown bytes-field to it — so the test proves the WIRE SHAPE is
+// tolerant, not that this build's own encoder round-trips:
+//
+//	field 25, wire type 2: tag = 25<<3|2 = 202 → varint ca 01;
+//	length 75; payload = SealedDelivery{ciphertext: field 1, len 73}.
+func TestSealedDeliveryFrameIsOldReceiverCompatible(t *testing.T) {
+	// A real drain frame carries ONLY field 25 as its payload — the text
+	// rides encrypted inside the box — so the old receiver's view of it is
+	// "envelope metadata I know, payload I do not". Build exactly that.
+	base := &walkiev1.Envelope{
+		MessageId: "01J8Z9P3Q7V6M4T8J2WXYR5N6C",
+		SentAt:    timestamppb.New(timeDate(2026, 8, 20, 0, 0, 0)),
+	}
+	known, err := proto.Marshal(base)
+	if err != nil {
+		t.Fatalf("Marshal baseline: %v", err)
+	}
+
+	// The hand-built sealed-delivery record, exactly as a NEW coordinator
+	// emits it during a queue drain and an OLD client must absorb as
+	// unknown bytes.
+	box := make([]byte, 73)
+	for i := range box {
+		box[i] = byte(0xE0 + i%16)
+	}
+	inner := append([]byte{0x0a, 73}, box...)          // SealedDelivery.ciphertext
+	record := append([]byte{0xca, 0x01, 75}, inner...) // Envelope field 25, len 75
+	futuristic := append(append([]byte{}, known...), record...)
+
+	decoded := &walkiev1.Envelope{}
+	if err := proto.Unmarshal(futuristic, decoded); err != nil {
+		t.Fatalf("decode refused a frame carrying sealed_delivery: %v", err)
+	}
+
+	// The fields the old receiver DOES know survive untouched — tolerance
+	// for the new field must never blur into loss of the old ones.
+	if decoded.GetMessageId() != base.GetMessageId() {
+		t.Errorf("message_id = %q, want %q", decoded.GetMessageId(), base.GetMessageId())
+	}
+	if !decoded.GetSentAt().AsTime().Equal(base.GetSentAt().AsTime()) {
+		t.Errorf("sent_at = %v, want %v", decoded.GetSentAt().AsTime(), base.GetSentAt().AsTime())
+	}
+
+	// A NEW receiver parses the same hand-built bytes into the typed payload,
+	// byte-for-byte the box that went in — the two generations read the same
+	// wire and disagree about nothing. (The old receiver, per the two
+	// unknown-field tests above, keeps the bytes and moves on.)
+	if sd := decoded.GetSealedDelivery(); sd == nil {
+		t.Fatalf("this build resolved field 25 to %T, want SealedDelivery", decoded.GetPayload())
+	} else if !equalBytes(sd.GetCiphertext(), box) {
+		t.Errorf("sealed_delivery.ciphertext damaged in decode")
+	}
+
+	reencoded, err := proto.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("re-Marshal: %v", err)
+	}
+	if !equalBytes(reencoded, futuristic) {
+		t.Fatalf("re-encode dropped or altered the sealed_delivery record\n got: %x\nwant: %x", reencoded, futuristic)
+	}
+}
