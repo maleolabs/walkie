@@ -1,6 +1,7 @@
 // Command walkie is the terminal client.
 //
-// Not implemented yet. The work items that build it are tracked in EKA:
+// The interactive client is still being assembled; its work items are tracked
+// in EKA:
 //
 //	eka get containers
 //	eka view execution
@@ -18,9 +19,15 @@
 // against the real coordinator in internal/coordinator's messaging suite and
 // internal/control's WebSocket e2e suite.
 //
-// The one thing this binary does today is report which build variant it is,
-// which matters because a fleet running two variants needs a way to tell them
-// apart on the device. See adr:002-runtime-stack.
+// What works today:
+//
+//   - `walkie history` — scriptable query over the local message store
+//     (sto:message-history criterion 2): by conversation, by time range, one
+//     JSON object per line. See its -help for the security statement that
+//     ships with it.
+//   - `walkie -version` — which build variant this is, which matters because a
+//     fleet running two variants needs a way to tell them apart on the device
+//     (adr:002-runtime-stack).
 package main
 
 import (
@@ -38,6 +45,13 @@ import (
 var version = "dev"
 
 func main() {
+	// Subcommand dispatch happens before global flag parsing: flag.Parse stops
+	// at the first non-flag argument, so "walkie history ..." would otherwise
+	// fall through to the not-implemented message below.
+	if len(os.Args) > 1 && os.Args[1] == "history" {
+		os.Exit(runHistory(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	showVersion := flag.Bool("version", false, "print version and build variant, then exit")
 	flag.Parse()
 
@@ -46,8 +60,9 @@ func main() {
 		return
 	}
 
-	fmt.Fprintln(os.Stderr, "walkie: the client is not implemented yet.")
+	fmt.Fprintln(os.Stderr, "walkie: the interactive client is not assembled yet.")
 	fmt.Fprintln(os.Stderr, "Its work items are planned in EKA; run 'eka view execution' to see them.")
+	fmt.Fprintln(os.Stderr, "Available today: 'walkie history -help' queries stored message history.")
 	os.Exit(1)
 }
 

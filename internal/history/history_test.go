@@ -29,8 +29,11 @@ const (
 
 func testClock() *clock.Fake { return clock.NewFake(epoch) }
 
+// testLocal is the device name every Append attributes messages to.
+const testLocal = "laptop.tail-scale.ts.net."
+
 func testOptions() Options {
-	return Options{Local: "laptop.tail-scale.ts.net.", TTL: testTTL, MaxMessages: testCap}
+	return Options{TTL: testTTL, MaxMessages: testCap}
 }
 
 func testLogger(buf *bytes.Buffer) *slog.Logger {
@@ -69,6 +72,15 @@ func ids(msgs []message.Message) []string {
 	out := make([]string, len(msgs))
 	for i, m := range msgs {
 		out[i] = m.ID
+	}
+	return out
+}
+
+// rowsToMsgs strips Row down to Message for the ID assertions.
+func rowsToMsgs(rows []Row) []message.Message {
+	out := make([]message.Message, len(rows))
+	for i, r := range rows {
+		out[i] = r.Message
 	}
 	return out
 }
@@ -154,7 +166,7 @@ func TestRestartSurvivesAndReopenDisplaysPerConversationOrder(t *testing.T) {
 		msg("m-a3", "alice.tail-scale.ts.net.", "a3", false, 6*time.Minute, 6*time.Minute),
 	}
 	for _, m := range appends {
-		if err := s1.Append(m); err != nil {
+		if err := s1.Append(testLocal, m); err != nil {
 			t.Fatalf("append %s: %v", m.ID, err)
 		}
 	}
@@ -210,10 +222,10 @@ func TestAppendDeduplicatesByULID(t *testing.T) {
 	s := mustOpen(t, filepath.Join(t.TempDir(), "history.db"), testClock(), testOptions())
 	m := msg("m-dup", "alice.tail-scale.ts.net.", "once", false, time.Minute, time.Minute)
 
-	if err := s.Append(m); err != nil {
+	if err := s.Append(testLocal, m); err != nil {
 		t.Fatalf("first append: %v", err)
 	}
-	if err := s.Append(m); err != nil {
+	if err := s.Append(testLocal, m); err != nil {
 		t.Fatalf("duplicate append: %v", err)
 	}
 
@@ -237,18 +249,18 @@ func TestTTLExpiryOnFakeClock(t *testing.T) {
 	s := mustOpen(t, filepath.Join(t.TempDir(), "history.db"), clk, opts)
 
 	secret := "the launch codes are under the mat"
-	if err := s.Append(msg("m-old", "alice.tail-scale.ts.net.", secret, false, time.Minute, time.Minute)); err != nil {
+	if err := s.Append(testLocal, msg("m-old", "alice.tail-scale.ts.net.", secret, false, time.Minute, time.Minute)); err != nil {
 		t.Fatalf("append old: %v", err)
 	}
 
 	// Half the TTL later a second message lands; then cross only the FIRST
 	// message's deadline. Exactly it expires.
 	clk.Advance(testTTL / 2)
-	if err := s.Append(msg("m-new", "alice.tail-scale.ts.net.", "harmless", false, 0, 0)); err != nil {
+	if err := s.Append(testLocal, msg("m-new", "alice.tail-scale.ts.net.", "harmless", false, 0, 0)); err != nil {
 		t.Fatalf("append new: %v", err)
 	}
 	clk.Advance(testTTL / 2)
-	if err := s.Append(msg("m-trigger", "alice.tail-scale.ts.net.", "trigger", false, 0, 0)); err != nil {
+	if err := s.Append(testLocal, msg("m-trigger", "alice.tail-scale.ts.net.", "trigger", false, 0, 0)); err != nil {
 		t.Fatalf("append trigger: %v", err)
 	}
 
@@ -276,7 +288,7 @@ func TestExpiredDuringDowntimeSweptAtOpen(t *testing.T) {
 
 	opts := testOptions()
 	s1 := mustOpen(t, path, clk, opts)
-	if err := s1.Append(msg("m-lapsed", "alice.tail-scale.ts.net.", "old", false, time.Minute, time.Minute)); err != nil {
+	if err := s1.Append(testLocal, msg("m-lapsed", "alice.tail-scale.ts.net.", "old", false, time.Minute, time.Minute)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	s1.Close()
@@ -320,7 +332,7 @@ func TestSizeCapEvictsOldestLoudly(t *testing.T) {
 		id := message.NewID(epoch.Add(time.Duration(i) * time.Second))
 		appended = append(appended, id)
 		m := msg(id, "alice.tail-scale.ts.net.", secret, false, 0, 0)
-		if err := s.Append(m); err != nil {
+		if err := s.Append(testLocal, m); err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
 	}
@@ -333,7 +345,7 @@ func TestSizeCapEvictsOldestLoudly(t *testing.T) {
 		t.Fatalf("retained %d messages, want exactly the cap of 3", len(got))
 	}
 	// The OLDEST left, the newest stayed: survivors are the last three arrivals.
-	assertIDs(t, got, appended[2], appended[3], appended[4])
+	assertIDs(t, rowsToMsgs(got), appended[2], appended[3], appended[4])
 
 	out := logs.String()
 	if !strings.Contains(out, "history size cap reached") {
@@ -353,7 +365,7 @@ func TestQueryByTimeRange(t *testing.T) {
 	for i, ago := range []time.Duration{40 * time.Minute, 30 * time.Minute, 20 * time.Minute} {
 		m := msg(message.NewID(epoch.Add(time.Duration(i)*time.Second)),
 			"alice.tail-scale.ts.net.", "body", false, 90*time.Minute, ago)
-		if err := s.Append(m); err != nil {
+		if err := s.Append(testLocal, m); err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
 	}
@@ -390,14 +402,13 @@ func TestQueryByTimeRange(t *testing.T) {
 		t.Fatalf("empty range query: %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("empty range returned %v", ids(got))
+		t.Fatalf("empty range returned %v", ids(rowsToMsgs(got)))
 	}
 }
 
-// TestOpenRefusesWiringErrors: non-positive bounds, missing device name or a
-// nil clock are programmer errors refused at construction, per the house rule
-// — a history that expires instantly or evicts everything is a wiring bug,
-// not a mode.
+// TestOpenRefusesWiringErrors: non-positive bounds or a nil clock are
+// programmer errors refused at construction, per the house rule — a history
+// that expires instantly or evicts everything is a wiring bug, not a mode.
 func TestOpenRefusesWiringErrors(t *testing.T) {
 	clk := testClock()
 	path := filepath.Join(t.TempDir(), "history.db")
@@ -408,7 +419,6 @@ func TestOpenRefusesWiringErrors(t *testing.T) {
 		clk  clock.Clock
 	}{
 		{"nil clock", testOptions(), nil},
-		{"empty local", func() Options { o := testOptions(); o.Local = ""; return o }(), clk},
 		{"zero ttl", func() Options { o := testOptions(); o.TTL = 0; return o }(), clk},
 		{"negative ttl", func() Options { o := testOptions(); o.TTL = -time.Second; return o }(), clk},
 		{"zero cap", func() Options { o := testOptions(); o.MaxMessages = 0; return o }(), clk},
@@ -421,12 +431,16 @@ func TestOpenRefusesWiringErrors(t *testing.T) {
 	}
 }
 
-// TestAppendRefusesEmptyID: the ULID is the whole dedup mechanism; storing a
-// row without one would be un-deduplicable filler.
-func TestAppendRefusesEmptyID(t *testing.T) {
+// TestAppendRefusesMissingIdentity: the ULID is the whole dedup mechanism and
+// the local name decides which side of a DM is us — storing a row without
+// either would be un-deduplicable filler filed in the wrong conversation.
+func TestAppendRefusesMissingIdentity(t *testing.T) {
 	s := mustOpen(t, filepath.Join(t.TempDir(), "history.db"), testClock(), testOptions())
+	if err := s.Append("", msg("m-1", "alice.tail-scale.ts.net.", "body", false, 0, 0)); err == nil {
+		t.Fatal("append without local device name succeeded, want error")
+	}
 	m := msg("", "alice.tail-scale.ts.net.", "body", false, 0, 0)
-	if err := s.Append(m); err == nil {
+	if err := s.Append(testLocal, m); err == nil {
 		t.Fatal("append without ID succeeded, want error")
 	}
 }

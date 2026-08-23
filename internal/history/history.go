@@ -68,9 +68,6 @@ type Store struct {
 	ttl     time.Duration
 	maxRows int
 	logger  *slog.Logger
-	// local is this device's tailnet name; conversation derivation needs it to
-	// tell which side of a DM is us. Immutable after Open.
-	local string
 }
 
 // Options configures a [Store]. All fields are required: a zero TTL would
@@ -78,11 +75,6 @@ type Store struct {
 // bugs, not modes, refused at Open per the house rule (queue.New refuses the
 // same way).
 type Options struct {
-	// Local is this device's tailnet name, as HelloAck reports it. Conversation
-	// derivation needs it to tell which side of a DM is us; see
-	// [message.ConversationKeyFor].
-	Local string
-
 	// TTL is how long a message stays in local history past its storage time.
 	TTL time.Duration
 
@@ -92,6 +84,23 @@ type Options struct {
 	// Logger receives retention events. nil falls back to slog.Default.
 	Logger *slog.Logger
 }
+
+// Defaults for the two retention bounds when a caller has no configuration of
+// its own yet (the CLI query surface uses them; the assembled client will
+// decide its own values when sto:terminal-ui wires composition).
+//
+// Why these numbers: the fleet is under 20 devices at human messaging rates
+// (arc:system-overview scale posture), so thirty days of history is already
+// generous for terminal chat, and 10,000 rows bounds the worst case (bodies up
+// to message.MaxBodyBytes) to tens of megabytes — a real bound, not a
+// theoretical one. In practice the TTL binds first; the cap exists so a chatty
+// month cannot outgrow the disk either. Both exist because retention is ALWAYS
+// bounded — unbounded growth is a defect, not a feature (req:text-messaging /
+// CLAUDE.md invariant).
+const (
+	DefaultTTL         = 30 * 24 * time.Hour
+	DefaultMaxMessages = 10_000
+)
 
 // Open opens (creating if necessary) the history database at path and returns
 // a handle. The parent directory is created 0700 and the file 0600, both
@@ -107,9 +116,6 @@ type Options struct {
 func Open(path string, clk clock.Clock, opts Options) (*Store, error) {
 	if clk == nil {
 		return nil, fmt.Errorf("history: open %s: clk must not be nil", path)
-	}
-	if opts.Local == "" {
-		return nil, fmt.Errorf("history: open %s: opts.Local must name this device", path)
 	}
 	if opts.TTL <= 0 {
 		return nil, fmt.Errorf("history: open %s: opts.TTL must be positive (got %s)", path, opts.TTL)
@@ -142,7 +148,7 @@ func Open(path string, clk clock.Clock, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("history: open %s: %w", abs, err)
 	}
 
-	s := &Store{st: st, clk: clk, ttl: opts.TTL, maxRows: opts.MaxMessages, logger: logger, local: opts.Local}
+	s := &Store{st: st, clk: clk, ttl: opts.TTL, maxRows: opts.MaxMessages, logger: logger}
 	if err := s.enforceRetention(); err != nil {
 		st.Close()
 		return nil, fmt.Errorf("history: startup retention sweep: %w", err)
@@ -157,19 +163,28 @@ func (s *Store) Close() error {
 }
 
 // Append persists msg, filing it into its conversation exactly as the display
-// Log would ([message.ConversationKeyFor] — one derivation, so display and
-// history can never disagree about where a message lives).
+// Log would — local is this device's tailnet name (HelloAck reports it), and
+// [message.ConversationKeyFor] does the derivation so display and history can
+// never disagree about where a message lives.
+//
+// It is a parameter rather than stored state because the value is the caller's
+// identity, not this package's: a query-only caller has none, and the assembled
+// client knows its own after HelloAck. Refusing an empty one here keeps a
+// mis-wired client from filing every DM under its sender.
 //
 // Duplicate ULIDs are ignored silently: delivery is at-least-once on the wire
 // and dedup-by-ULID-at-the-receiver is the contract (req:text-messaging), so
 // a replayed message arriving here is the mechanism working, not an event
 // worth logging. Retention runs after the insert, keeping both bounds honest
 // even if this is the only call the process ever makes.
-func (s *Store) Append(msg message.Message) error {
+func (s *Store) Append(local string, msg message.Message) error {
+	if local == "" {
+		return errors.New("history: append: local device name must not be empty")
+	}
 	if msg.ID == "" {
 		return errors.New("history: append: message ID must not be empty")
 	}
-	conversation := message.ConversationKeyFor(s.local, msg)
+	conversation := message.ConversationKeyFor(local, msg)
 	_, err := s.st.DB().Exec(
 		`INSERT OR IGNORE INTO history_message
 			(message_id, conversation, sender, recipient, body, sent_at, received_at, stored_at)
@@ -203,11 +218,20 @@ type QueryOptions struct {
 	From, To *time.Time
 }
 
-// Query returns the matching messages ordered by local arrival (seq), oldest
+// Row is one stored message together with the conversation key it was filed
+// under. The key travels WITH the row because a reader cannot re-derive it:
+// telling which side of a DM is "us" needs this device's name, which a
+// query-only caller does not have — and guessing would mislabel sent traffic.
+type Row struct {
+	Message      message.Message
+	Conversation string
+}
+
+// Query returns the matching rows ordered by local arrival (seq), oldest
 // first. Within one conversation that IS per-conversation order; across
 // conversations it is merely the order this device observed things, which is
 // presentation-stable output, not a global order — see the type comment.
-func (s *Store) Query(opts QueryOptions) ([]message.Message, error) {
+func (s *Store) Query(opts QueryOptions) ([]Row, error) {
 	where := ` WHERE TRUE`
 	var args []any
 	if opts.Conversation != "" {
@@ -233,23 +257,23 @@ func (s *Store) Query(opts QueryOptions) ([]message.Message, error) {
 	}
 	defer rows.Close()
 
-	var out []message.Message
+	var out []Row
 	for rows.Next() {
 		var (
-			m                  message.Message
-			conversation       string
+			r                  Row
 			sentAt, receivedAt string
 		)
-		if err := rows.Scan(&m.ID, &conversation, &m.Sender, &m.Recipient, &m.Body, &sentAt, &receivedAt); err != nil {
+		if err := rows.Scan(&r.Message.ID, &r.Conversation, &r.Message.Sender, &r.Message.Recipient,
+			&r.Message.Body, &sentAt, &receivedAt); err != nil {
 			return nil, fmt.Errorf("history: query: scan: %w", err)
 		}
-		if m.SentAt, err = parseStoredTime(sentAt); err != nil {
+		if r.Message.SentAt, err = parseStoredTime(sentAt); err != nil {
 			return nil, fmt.Errorf("history: query: %w", err)
 		}
-		if m.ReceivedAt, err = parseStoredTime(receivedAt); err != nil {
+		if r.Message.ReceivedAt, err = parseStoredTime(receivedAt); err != nil {
 			return nil, fmt.Errorf("history: query: %w", err)
 		}
-		out = append(out, m)
+		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("history: query: iterate: %w", err)
@@ -261,7 +285,15 @@ func (s *Store) Query(opts QueryOptions) ([]message.Message, error) {
 // the reopen path criterion 1 is about. The key comes from
 // [message.ConversationKeyFor]; the CLI accepts peer names and derives it.
 func (s *Store) Conversation(key string) ([]message.Message, error) {
-	return s.Query(QueryOptions{Conversation: key})
+	rows, err := s.Query(QueryOptions{Conversation: key})
+	if err != nil {
+		return nil, err
+	}
+	msgs := make([]message.Message, len(rows))
+	for i, r := range rows {
+		msgs[i] = r.Message
+	}
+	return msgs, nil
 }
 
 // enforceRetention applies both bounds: TTL expiry first (age is a property of
