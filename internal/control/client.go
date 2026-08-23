@@ -185,7 +185,10 @@ func (c *Client) Start() {
 // transport death — and the watchdog is stopped. Idempotent. The machine is
 // left wherever the death path leaves it (disconnected, unless the session
 // was already gone): Stop does not invent transitions, the normal teardown
-// paths perform them, which keeps the event stream an honest record.
+// paths perform them, which keeps the event stream an honest record. The
+// Machine subscription taken in NewClient stays live past Stop; it ends only
+// at Machine.Close(), which downstream consumers holding their own
+// subscriptions (sto:terminal-ui) also drive.
 func (c *Client) Stop() {
 	c.stopOnce.Do(func() {
 		close(c.quit)

@@ -399,10 +399,10 @@ func TestTwentyClientsReconnectAfterRestartWithoutClustering(t *testing.T) {
 		t.Fatalf("%d clients reconnected, want %d", len(res.stamps), herdSize)
 	}
 
-	// Two timelines, one assertion each:
+	// Two timelines, asserted per client:
 	//
-	//   OBSERVED — every client's online stamp must sit within three driver
-	//   steps of its own armed fire (t0 + drawn delay). This ties the
+	//   OBSERVED — every client's online stamp must sit within
+	//   herdLagTolerance of its own armed fire (t0 + drawn delay). This ties the
 	//   measurement to the real system: the supervisor armed the seeded
 	//   schedule and the fleet came back on it. The slack absorbs stamp
 	//   quantization to the step grid plus bounded scheduling lag; it cannot
@@ -422,6 +422,12 @@ func TestTwentyClientsReconnectAfterRestartWithoutClustering(t *testing.T) {
 		if res.dials[i].Before(fire.Add(-herdStep)) {
 			t.Fatalf("client %d redialed at %v, before its armed fire at %v (draw %v)",
 				i, res.dials[i], fire, res.draws[i])
+		}
+		// Upper bound is per-client too: the stamp may trail its own armed
+		// fire by herdLagTolerance, no more.
+		if res.stamps[i].After(fire.Add(herdLagTolerance)) {
+			t.Fatalf("client %d reached online at %v, more than %v after its armed fire at %v (draw %v)",
+				i, res.stamps[i], herdLagTolerance, fire, res.draws[i])
 		}
 		computed = append(computed, fire)
 	}

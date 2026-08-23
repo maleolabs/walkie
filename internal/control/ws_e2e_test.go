@@ -199,9 +199,7 @@ func (r *wsE2ERig) dialWebSocket(ip byte) DialFunc {
 		serverSide := &addrConn{Conn: serverEnd, local: target.Addr(), remote: tailnetAddr(ip)}
 		r.mu.Lock()
 		r.live = append(r.live, serverSide)
-		attempts := len(r.live)
 		r.mu.Unlock()
-		_ = attempts
 		if err := target.enqueue(serverSide); err != nil {
 			return nil, err
 		}
