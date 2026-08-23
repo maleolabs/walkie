@@ -29,11 +29,14 @@ import (
 // # What is opaque here, on purpose
 //
 // The stored row keeps the stamped envelope as one BLOB the queue never opens.
-// Enqueue marshals it verbatim; Resume unmarshals it to put it back on the
-// wire with its position stamped. The queue never inspects payload fields,
-// never indexes or searches on content — which is exactly the shape
-// ts:queue-sealed-box needs: it swaps the BLOB's plaintext for ciphertext at
-// the same two boundary points without touching this logic or the schema.
+// Enqueue renders it through the at-rest seam (verbatim when unwired, sealed
+// box when wired via NewSealed); Resume reverses the seam and unmarshals to
+// put it back on the wire with its position stamped. The queue never inspects
+// payload fields, never indexes or searches on content — which is exactly the
+// shape ts:queue-sealed-box needed: ciphertext replaced plaintext at the same
+// two boundary points without touching this logic or the schema (sealed.go
+// records the one open dependency: production enablement awaits a
+// sealed-delivery carrier in the control-plane schema).
 //
 // # Concurrency shape
 //
@@ -66,6 +69,14 @@ type Queue struct {
 	// ts:test-harness forbids sleeping a race away). Buffered, sent
 	// non-blocking: nobody listening loses nothing.
 	swept chan struct{}
+
+	// atRest is ts:queue-sealed-box's encryption seam (see sealed.go): what
+	// a body looks like while it rests in storage. Nil — the plain [New]
+	// shape — stores and reads bytes verbatim; NewSealed wires the sealed
+	// box. Every code path here treats bodies as opaque either way; the seam
+	// is applied at exactly two points, sealForStorage in Enqueue and
+	// openFromStorage in Resume, and nowhere else.
+	atRest AtRest
 }
 
 // CapacityError is the typed refusal returned by [Queue.Enqueue] when the
@@ -114,6 +125,12 @@ type Delivery struct {
 // instantly and a zero cap would refuse everything — both wiring bugs, not
 // modes, refused per the house rule for programmer errors.
 func New(st *store.Store, clk clock.Clock, ttl time.Duration, maxSize int, logger *slog.Logger) (*Queue, error) {
+	return newQueue(st, clk, ttl, maxSize, logger)
+}
+
+// newQueue is the shared constructor body of [New] and [NewSealed]; see New
+// for the full contract and NewSealed for the encrypted-at-rest variant.
+func newQueue(st *store.Store, clk clock.Clock, ttl time.Duration, maxSize int, logger *slog.Logger) (*Queue, error) {
 	if st == nil {
 		return nil, fmt.Errorf("queue: new: st must not be nil")
 	}
@@ -187,7 +204,16 @@ func (q *Queue) Deliver(recipient string, env *walkiev1.Envelope) error {
 // before any insert). Expiry by TTL is a different mechanism entirely — quiet,
 // logged eviction of messages already accepted; see sweep.
 func (q *Queue) Enqueue(recipient string, env *walkiev1.Envelope) (uint64, error) {
-	body, err := marshalOpaque(env)
+	marshalled, err := marshalOpaque(env)
+	if err != nil {
+		return 0, fmt.Errorf("queue: enqueue for %q: %w", recipient, err)
+	}
+	// The at-rest seam (ts:queue-sealed-box): the stored BLOB is whatever
+	// Seal produces — sealed-box ciphertext when the queue is wired with
+	// NewSealed, the marshalled envelope verbatim when it is not. Either way
+	// this code sees only opaque bytes; a seal failure refuses the enqueue
+	// and stores nothing, exactly like any other internal failure.
+	body, err := q.sealForStorage(recipient, marshalled)
 	if err != nil {
 		return 0, fmt.Errorf("queue: enqueue for %q: %w", recipient, err)
 	}
@@ -280,7 +306,10 @@ func (q *Queue) Enqueue(recipient string, env *walkiev1.Envelope) (uint64, error
 // this.
 func (q *Queue) Resume(recipient string, after uint64) ([]Delivery, error) {
 	rows, err := q.db.Query(
-		`SELECT position, body FROM queue_inbox WHERE recipient = ? AND position > ? ORDER BY position`,
+		// message_id rides along for the at-rest seam's failure logs: it is
+		// row metadata from its own column, never read out of the (possibly
+		// sealed) body.
+		`SELECT position, message_id, body FROM queue_inbox WHERE recipient = ? AND position > ? ORDER BY position`,
 		recipient, int64(after),
 	)
 	if err != nil {
@@ -291,11 +320,23 @@ func (q *Queue) Resume(recipient string, after uint64) ([]Delivery, error) {
 	var out []Delivery
 	for rows.Next() {
 		var pos int64
+		var messageID string
 		var body []byte
-		if err := rows.Scan(&pos, &body); err != nil {
-			return nil, fmt.Errorf("queue: resume %q: scan: %w", recipient, err)
+		if err := rows.Scan(&pos, &messageID, &body); err != nil {
+			return nil, fmt.Errorf("queue: resume %q position %d: scan: %w", recipient, pos, err)
 		}
-		env, err := unmarshalOpaque(body)
+		// The at-rest seam's read half (ts:queue-sealed-box): open what
+		// rested before unmarshalling it. An undecryptable row — tampered,
+		// or sealed to a key this recipient no longer holds — is SKIPPED
+		// whole, loudly logged, never partially processed (criterion 4; the
+		// deliberate-drop rule on AtRest). The resume continues: one dead
+		// row must not withhold every message behind it, and Ack's
+		// high-water delete bounds how long the skipped row lingers.
+		opened, deliverable := q.openFromStorage(recipient, pos, messageID, body)
+		if !deliverable {
+			continue
+		}
+		env, err := unmarshalOpaque(opened)
 		if err != nil {
 			return nil, fmt.Errorf("queue: resume %q position %d: %w", recipient, pos, err)
 		}

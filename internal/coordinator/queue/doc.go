@@ -32,16 +32,20 @@
 // # Encryption
 //
 // Payloads resting here are outside the WireGuard tunnel's protection, which is
-// exactly why adr:004-security-model puts them in scope for the sealed box. This
-// package will store ciphertext once ts:queue-sealed-box lands; see
-// internal/crypto. At that point a test should read the stored bytes directly
-// and assert they are not plaintext.
+// exactly why adr:004-security-model puts them in scope for the sealed box. See
+// internal/crypto and [AtRest] (sealed.go) for the construction and for who
+// decrypts what: bodies seal TO THE RECIPIENT's pinned public key, so this
+// package — and the coordinator holding it — can store what it cannot read.
 //
-// State under sto:offline-queue (this item): bodies are stored OPAQUE — the
-// queue marshals the stamped envelope verbatim into one BLOB and never opens
-// it on any path other than replay, and nothing indexes or searches on
-// content. The bytes are still PLAINTEXT until ts:queue-sealed-box lands;
-// that item swaps ciphertext for plaintext at exactly the two boundary points
-// this shape provides (marshal-before-store, unmarshal-after-load) without
-// touching this logic or the schema.
+// State under ts:queue-sealed-box: the swap happened at exactly the two
+// boundary points this shape reserved (sealForStorage before the INSERT,
+// openFromStorage after the SELECT), without touching this logic or the
+// schema. [NewSealed] wires it; an undecryptable row is skipped whole, loudly,
+// never partially processed. Production still wires plain [New]: the drain
+// contract hands recipients decoded envelopes, and the control-plane schema
+// does not yet carry a payload able to hold opaque sealed-box bytes — enabling
+// sealing before that additive schema change would strand every queued message
+// undeliverable. The seam, its tests, and the byte-level stored-bytes proof
+// are complete; flipping production over is one constructor call plus that
+// one schema addition.
 package queue
