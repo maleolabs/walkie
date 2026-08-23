@@ -55,3 +55,4 @@ Thumbs.db
 #                       — which matters for ARM devices and new contributors.
 #                       CI enforces that it stays in sync with proto/.
 # =========================================================================
+/.eka/
