@@ -106,6 +106,39 @@ ships in that help output. When the quickstart and runbook land
 (`ts:docs-quickstart-runbook`), they must carry this unencrypted-at-rest
 statement forward so users keep being told after this README is rewritten.
 
+## Queued messages are encrypted
+
+Messages waiting for an offline device in the coordinator's queue are stored
+as ciphertext. Each device generates an X25519 identity key on first run
+(stored with owner-only permissions: 0600 file, 0700 directory) and senders
+seal queued payloads to the recipient's key with XChaCha20-Poly1305
+(`adr:004-security-model`). A compromised coordinator can hold queued
+messages but cannot read them. Direct live traffic is NOT additionally
+encrypted — it relies on WireGuard; that is a deliberate scope boundary, not
+an oversight.
+
+**Losing your device's key forfeits your queued messages.** Queued messages
+are sealed to your key and there is no backup, no recovery and no escrow.
+Lose the key file and everything parked for you becomes unreadable padding.
+
+**Key rotation and multi-device identity are not implemented.** Re-installing
+walkie generates a fresh key, and every peer will treat that as a key change
+and demand confirmation before trusting it. That friction is the design
+working.
+
+Trust is on first use: the first key seen for a peer is pinned. If a peer
+later presents a different key, walkie warns loudly and requires explicit
+confirmation before using it — headless and scripted contexts refuse by
+default rather than assume consent. To verify a peer out of band, compare
+fingerprints read aloud over a call: a walkie fingerprint is twenty decimal
+digits in five groups of four (e.g. `4677 6887 2937 2977 8267`), derived from
+SHA-256 of the peer's public key.
+
+When the quickstart and runbook land (`ts:docs-quickstart-runbook`), they must
+carry the key-loss statement, the no-rotation statement and the fingerprint
+verification procedure forward so users keep being told after this README is
+rewritten.
+
 ## Remote shell access
 
 walkie does not provide it, by decision rather than omission — see
