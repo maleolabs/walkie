@@ -110,12 +110,16 @@ statement forward so users keep being told after this README is rewritten.
 
 Messages waiting for an offline device in the coordinator's queue are stored
 as ciphertext. Each device generates an X25519 identity key on first run
-(stored with owner-only permissions: 0600 file, 0700 directory) and senders
-seal queued payloads to the recipient's key with XChaCha20-Poly1305
-(`adr:004-security-model`). A compromised coordinator can hold queued
-messages but cannot read them. Direct live traffic is NOT additionally
-encrypted — it relies on WireGuard; that is a deliberate scope boundary, not
-an oversight.
+(stored with owner-only permissions: 0600 file, 0700 directory). The
+coordinator seals each queued payload to the RECIPIENT's pinned public key
+with X25519 + XChaCha20-Poly1305 (`adr:004-security-model`) before writing it
+to its database, and holds only public keys — so a compromised coordinator can
+hold queued messages but can never read them. Only the holder of the
+recipient's identity key can decrypt what was queued for it; losing that key
+forfeits exactly those messages.
+
+Direct live traffic is NOT additionally encrypted — it relies on WireGuard;
+that is a deliberate scope boundary, not an oversight.
 
 **Losing your device's key forfeits your queued messages.** Queued messages
 are sealed to your key and there is no backup, no recovery and no escrow.
@@ -133,6 +137,15 @@ default rather than assume consent. To verify a peer out of band, compare
 fingerprints read aloud over a call: a walkie fingerprint is twenty decimal
 digits in five groups of four (e.g. `4677 6887 2937 2977 8267`), derived from
 SHA-256 of the peer's public key.
+
+Status note: the sealing machinery and its byte-level at-rest proof are
+implemented and tested (`internal/coordinator/queue`, `internal/crypto`); the
+coordinator currently enables key distribution while queue encryption itself
+awaits one additive control-plane schema change — a payload able to carry the
+sealed box to the recipient during queue drain. Until then the coordinator
+stores queued envelopes verbatim, and enabling sealing early would strand
+every queued message undeliverable. The key-loss and no-rotation statements
+above describe the sealed end state and bind the wiring that turns it on.
 
 When the quickstart and runbook land (`ts:docs-quickstart-runbook`), they must
 carry the key-loss statement, the no-rotation statement and the fingerprint
