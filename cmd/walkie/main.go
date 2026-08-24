@@ -1,41 +1,52 @@
 // Command walkie is the terminal client.
 //
-// The interactive client is still being assembled; its work items are tracked
-// in EKA:
+// Owning work item:
 //
-//	eka get containers
-//	eka view execution
+//	eka get walkie/sto:terminal-ui
 //
-// Assembly order for the text half (sto:text-messaging), recorded where the
-// wiring will land so it is not re-derived later: a control.Client
-// (internal/control, ts:reconnect-resume — dialing, Hello/HelloAck with
-// last_acked_position, watchdog, jittered retry loop) feeds every received
-// envelope to a messagehub.Hub's Apply via OnEnvelope; outgoing Hub envelopes
-// go through Client.Send; queue deliveries are acknowledged through
-// Client.Acknowledge once durably processed; connection state for rendering
-// comes from Client.Machine().Subscribe plus Client.State/ConnectedAs.
-// Rendering reads Hub.Conversation snapshots and Apply's display verdict
-// (sto:terminal-ui). The seam already exists and is proven end-to-end
-// against the real coordinator in internal/coordinator's messaging suite and
-// internal/control's WebSocket e2e suite.
+// Running `walkie` with no arguments starts the interactive client: it opens
+// local state under ~/.walkie (identity key, message history, offline outbox —
+// all created on first run, nothing to hand-edit), connects to the coordinator
+// over the host's Tailscale, and brings up the terminal interface. vis:
+// terminal-mesh-comms principle 4 makes that path a design constraint here: a
+// working session in no more than three commands, for a reader who is not
+// technical.
 //
-// Two ts:queue-sealed-box duties land with that assembly, both proven in
-// their owning packages and recorded here so they are not re-derived:
+// # Why the client dials through the HOST's tailscale, not tsnet
 //
-//   - the hub gets this device's X25519 identity key at wiring time
-//     (messagehub.Hub.UseIdentity over crypto.LoadOrCreateIdentity) so
-//     sealed queue deliveries open on arrival — undecryptable ones drop
-//     loudly inside Apply, and their OUTER position is acked regardless of
-//     the verdict (displayed and forfeited are both terminal; withholding
-//     the ack would freeze the queue behind an unreadable frame);
-//   - the client announces its public key (PublicKeyAnnounce) immediately
-//     after its first handshake, because peers can only seal queued mail to
-//     a PINNED key — until that first announce, messages held for this
-//     device rest plaintext on the coordinator under the documented
-//     bootstrap rule (queue.AtRest), and announcing late widens that window.
+// The coordinator joins the tailnet via tsnet because it is a container with
+// no host daemon. A user device is ALREADY a tailnet member — that is the
+// population this binary serves — so the client dials the coordinator's
+// MagicDNS name through the ordinary host stack and lets tailscaled route it
+// over the tunnel. The coordinator's WhoIs then resolves the connection to the
+// HOST's identity: no auth key, no node pairing, no secret anywhere on the
+// client (adr:004 puts no credentials in walkie; fnd:tailnet-capability-
+// baseline records what the tailnet already provides). A tsnet join would
+// demand a per-device auth key — an interactive prompt or environment variable
+// a non-technical reader must discover — which is precisely the failure mode
+// criterion 1 forbids.
+//
+// # Configuration surface (deliberately tiny)
+//
+// Every flag has a sane default; none is required; there is no configuration
+// file. -coordinator exists for deployments whose coordinator does not run
+// under its default hostname.
+//
+//	-coordinator  control-plane WebSocket URL
+//	              (default "ws://walkie-coordinator:443" — MagicDNS resolves
+//	              the coordinator's default hostname; port 443 is its default;
+//	              plain ws because WireGuard encrypts the tunnel and adr:004
+//	              forbids stacking TLS inside it)
+//	-db           history database (default ~/.walkie/history.db — the SAME
+//	              path `walkie history` reads)
+//	-identity     X25519 identity key (default ~/.walkie/identity.key,
+//	              generated owner-only on first run; losing it forfeits the
+//	              messages queued for this device — see README)
 //
 // What works today:
 //
+//   - `walkie` — text, presence and connection state in the terminal
+//     (sto:terminal-ui).
 //   - `walkie history` — scriptable query over the local message store
 //     (sto:message-history criterion 2): by conversation, by time range, one
 //     JSON object per line. See its -help for the security statement that
@@ -49,38 +60,183 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/maleolabs/walkie/internal/audio"
+	"github.com/maleolabs/walkie/internal/clock"
+	"github.com/maleolabs/walkie/internal/control"
+	"github.com/maleolabs/walkie/internal/crypto"
+	"github.com/maleolabs/walkie/internal/history"
+	"github.com/maleolabs/walkie/internal/obs"
+	"github.com/maleolabs/walkie/internal/outbox"
+	"github.com/maleolabs/walkie/internal/presenceview"
+	"github.com/maleolabs/walkie/internal/store"
+	"github.com/maleolabs/walkie/internal/tui"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
 // Wiring that into the release pipeline belongs to ts:build-release-matrix.
 var version = "dev"
 
+// defaultCoordinatorURL is where the client looks for the coordinator unless
+// -coordinator says otherwise: the coordinator binary's default hostname,
+// resolvable by MagicDNS on any tailnet with defaults, on its default control
+// port. See the package comment for why the scheme is plain ws.
+const defaultCoordinatorURL = "ws://walkie-coordinator:443"
+
 func main() {
 	// Subcommand dispatch happens before global flag parsing: flag.Parse stops
 	// at the first non-flag argument, so "walkie history ..." would otherwise
-	// fall through to the not-implemented message below.
+	// fall through to the interactive client below.
 	if len(os.Args) > 1 && os.Args[1] == "history" {
 		os.Exit(runHistory(os.Args[2:], os.Stdout, os.Stderr))
 	}
 
 	showVersion := flag.Bool("version", false, "print version and build variant, then exit")
+	coordinator := flag.String("coordinator", defaultCoordinatorURL, "control-plane WebSocket URL of the coordinator")
+	dbPath := flag.String("db", defaultDBPath(), "path to the history database")
+	identityPath := flag.String("identity", defaultIdentityPath(), "path to this device's X25519 identity key")
 	flag.Parse()
 
 	if *showVersion {
 		printVersion(os.Stdout)
 		return
 	}
+	if *dbPath == "" {
+		fmt.Fprintln(os.Stderr, "walkie: cannot resolve a home directory for the history database; pass -db")
+		os.Exit(1)
+	}
+	if *identityPath == "" {
+		fmt.Fprintln(os.Stderr, "walkie: cannot resolve a home directory for the identity key; pass -identity")
+		os.Exit(1)
+	}
 
-	fmt.Fprintln(os.Stderr, "walkie: the interactive client is not assembled yet.")
-	fmt.Fprintln(os.Stderr, "Its work items are planned in EKA; run 'eka view execution' to see them.")
-	fmt.Fprintln(os.Stderr, "Available today: 'walkie history -help' queries stored message history.")
-	os.Exit(1)
+	logger := obs.NewLogger(os.Stderr, obs.ParseLevel(os.Getenv("WALKIE_LOG_LEVEL")))
+	if err := runClient(logger, clientConfig{
+		coordinatorURL: *coordinator,
+		dbPath:         *dbPath,
+		identityPath:   *identityPath,
+	}); err != nil {
+		logger.Error("walkie: fatal", slog.String("reason", err.Error()))
+		os.Exit(1)
+	}
 }
 
+// clientConfig is everything runClient needs from the flag surface.
+type clientConfig struct {
+	coordinatorURL string
+	dbPath         string
+	identityPath   string
+}
+
+// runClient assembles and runs the interactive client. Startup order is not
+// interchangeable: local state opens BEFORE any network attempt, so a bad
+// database path or unwritable key file fails fast and locally with a message
+// that names the fix, instead of after a connection has been established.
+func runClient(logger *slog.Logger, cfg clientConfig) error {
+	clk := clock.Real()
+
+	// Message history (sto:message-history): the same file `walkie history`
+	// queries, at the same default path, so the live view and the scriptable
+	// query read one store. Retention bounds are the package defaults —
+	// bounded retention is an invariant, not a knob to skip.
+	hist, err := history.Open(cfg.dbPath, clk, history.Options{
+		TTL:         history.DefaultTTL,
+		MaxMessages: history.DefaultMaxMessages,
+		Logger:      logger,
+	})
+	if err != nil {
+		return fmt.Errorf("open history %s: %w", cfg.dbPath, err)
+	}
+	defer hist.Close()
+
+	// This device's identity key (ts:queue-sealed-box): generated owner-only
+	// on first run, loaded on every later one. Everything queued for this
+	// device while it was offline is sealed to THIS key; losing the file
+	// forfeits exactly those messages (adr:004 consequence, stated in README).
+	key, err := crypto.LoadOrCreateIdentity(cfg.identityPath)
+	if err != nil {
+		return fmt.Errorf("load identity %s: %w", cfg.identityPath, err)
+	}
+	defer key.Zero()
+
+	// The offline outbox (sto:offline-queue) shares the history file: the
+	// embedded schema carries both tables, and one directory keeps backups and
+	// permissions uniform. It opens through its own store handle —
+	// history.Store does not expose its internals, and reaching around a seam
+	// to share one pool would buy a file descriptor at the cost of coupling;
+	// sequential opens cannot race each other's migrations, and busy_timeout
+	// absorbs the rare cross-handle write overlap at human messaging rates.
+	boxStore, err := store.Open(cfg.dbPath, clk)
+	if err != nil {
+		return fmt.Errorf("open outbox store %s: %w", cfg.dbPath, err)
+	}
+	defer boxStore.Close()
+	box, err := outbox.New(boxStore, clk, logger)
+	if err != nil {
+		return fmt.Errorf("start outbox: %w", err)
+	}
+
+	// The roster seam (sto:device-presence): fed by OnEnvelope below, rendered
+	// by the UI. Eagerly constructed — unlike the hub it needs no identity,
+	// and roster frames can arrive from the first moment online.
+	presence := presenceview.New(logger)
+
+	// Connection supervision (ts:reconnect-resume): machine first, client on
+	// top, production WebSocket dialer through the host's tailscale (see the
+	// package comment for why not tsnet).
+	mach, err := control.NewMachine(clk, logger)
+	if err != nil {
+		return fmt.Errorf("connection machine: %w", err)
+	}
+	dialer := control.NewWebSocketDialer(cfg.coordinatorURL, nil)
+	seedA, seedB := backoffSeeds()
+	client, err := control.NewClient(control.DefaultConfig(), mach, dialer.Dial, seedA, seedB, clk, logger)
+	if err != nil {
+		return fmt.Errorf("connection client: %w", err)
+	}
+
+	a := newApp(clk, logger, client, box, hist, key, presence)
+	client.OnEnvelope(a.OnEnvelope)
+
+	// Subscribe-first (Machine.Subscribe's rule), then seed the UI from the
+	// direct read: a change landing between the two appears in both — a
+	// harmless duplicate, never a miss. Two subscriptions because each is
+	// single-consumer: one drives the per-online duties, one drives the UI.
+	connSub := mach.Subscribe()
+	dutySub := mach.Subscribe()
+	go a.WatchConn(dutySub)
+
+	model := tui.New(tui.Params{
+		HubFunc:         a.hubSource,
+		Presence:        presence,
+		ConnChanges:     connSub.C(),
+		PresenceChanges: presence.Subscribe().C(),
+		Inbound:         a.inbound,
+		ConnectedAs:     client.ConnectedAs,
+		Send:            a.SendFromUI,
+		AudioAvailable:  audio.Available(),
+		ConnState:       mach.State(),
+	})
+
+	client.Start()
+	defer client.Stop()
+	defer mach.Close() // ends the subscription pumps Stop leaves running
+
+	program := tea.NewProgram(model, tea.WithAltScreen())
+	if _, err := program.Run(); err != nil {
+		return fmt.Errorf("terminal interface: %w", err)
+	}
+	return nil
+}
+
+// printVersion reports the build variant (adr:002-runtime-stack): a fleet
+// running two variants needs a way to tell them apart on the device.
 func printVersion(w io.Writer) {
 	fmt.Fprintf(w, "walkie %s %s/%s\n", version, runtime.GOOS, runtime.GOARCH)
 
@@ -88,8 +244,18 @@ func printVersion(w io.Writer) {
 	// fully useful text and presence client, so "no audio" is a normal state to
 	// report plainly rather than a defect to hide.
 	if audio.Available() {
-		fmt.Fprintf(w, "audio  available (built with the \"voice\" tag)\n")
+		fmt.Fprintln(w, `audio  available (built with the "voice" tag)`)
 	} else {
-		fmt.Fprintf(w, "audio  unavailable (built without the \"voice\" tag)\n")
+		fmt.Fprintln(w, `audio  unavailable (built without the "voice" tag)`)
 	}
+}
+
+// defaultIdentityPath mirrors defaultDBPath: one directory per user, named
+// after the runtime state .gitignore already excludes.
+func defaultIdentityPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "" // caller reports it; there is nothing sensible to guess
+	}
+	return filepath.Join(home, ".walkie", "identity.key")
 }
