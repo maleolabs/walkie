@@ -111,6 +111,12 @@ func New(p Params) Model {
 	ti.Placeholder = "type a message"
 	ti.Focus()
 	ti.CharLimit = message.MaxBodyBytes
+	// bubbles' default cursor glyph is U+2588 FULL BLOCK. Criterion 5 forbids
+	// assuming a font with wide/non-ASCII glyph coverage, so the composer's
+	// cursor is pinned to ASCII: a block that fails to render would leave the
+	// user typing blind in the one line they must type in. A vertical bar is
+	// the classic ASCII terminal cursor and renders everywhere.
+	ti.Cursor.SetChar("|")
 
 	m := Model{
 		p:         p,

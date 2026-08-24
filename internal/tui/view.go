@@ -14,15 +14,28 @@ import (
 // keymap.go. It lives here because it is user-facing copy; keymap.go cites it.
 const freeInputRule = "Digits and ? act as commands only while the input line is empty."
 
+// minColumns is criterion 4's hard floor: 80 columns is the smallest terminal
+// the interface promises to be USABLE on. Below it the layout arithmetic
+// (three-way pane split, clipped lines) would still produce output, but every
+// line would be truncated mid-word and the roster would crowd out the pane —
+// a corrupted-looking display that technically renders. That is exactly the
+// outcome the brief forbids, so below the floor View refuses with a short,
+// actionable message instead (narrowTerminalView). The floor is tested at
+// exactly 80 and just below it (constrained_test.go).
+const minColumns = 80
+
 // View renders the whole interface. The layout budget is computed top-down
 // from the terminal size so the result stays usable at exactly 80 columns and
-// at small heights (criterion 4's floor is slice 2's gate; this slice already
-// refuses to assume more than it is given).
+// at small heights (criterion 4's floor is this package's gate).
 //
 // Two regions are ALWAYS rendered regardless of size: the status line (first
 // line — connection state never scrolls away, criterion 3) and the hint line
 // (last line — criterion 6's discoverability does not depend on the pane).
 func (m Model) View() string {
+	if m.width < minColumns {
+		return m.narrowTerminalView()
+	}
+
 	var b strings.Builder
 	b.WriteString(m.statusLine())
 	b.WriteString("\n")
@@ -77,6 +90,25 @@ func (m Model) View() string {
 	b.WriteString(m.input.View())
 	b.WriteString("\n")
 	b.WriteString(m.hintLine())
+	return clip(b.String(), m.width)
+}
+
+// narrowTerminalView is the below-floor refusal (criterion 4: fail legibly,
+// never corrupt). It keeps the status line — criterion 3 has no size
+// exception, and "am I connected" matters most precisely when the session
+// looks wrong — then states the problem in three short lines. Each line is
+// under 26 cells ON PURPOSE: even a badly narrow terminal shows each line
+// whole, so the message itself cannot be corrupted by the clipping it
+// describes.
+func (m Model) narrowTerminalView() string {
+	var b strings.Builder
+	b.WriteString(m.statusLine())
+	b.WriteString("\n")
+	b.WriteString("walkie needs 80 columns.")
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("This terminal has %d.", m.width))
+	b.WriteString("\n")
+	b.WriteString("Widen the window.")
 	return clip(b.String(), m.width)
 }
 

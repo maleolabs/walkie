@@ -72,9 +72,12 @@
 //     involved (the model renders stamps carried on messages and takes no
 //     time source of its own).
 //
-// Slice 2 owns the constrained-terminal gates: the hard 80-column floor,
-// NO_COLOR / TERM=dumb legibility verification, and headless-over-SSH
-// behaviour. This slice already designs within them — ASCII-only chrome,
-// state carried by words as well as position, rune-based width clipping — but
-// does not gate on them.
+// Slice 2 gated the constrained-terminal rules this package designs within:
+// the hard 80-column floor (below it View refuses legibly rather than
+// rendering a corrupted layout), the no-colour contract (nothing load-bearing
+// rides on colour or on any non-ASCII glyph — pinned by test), and the
+// headless-over-SSH audit (no clipboard, notification or desktop
+// assumptions; the composer cursor is ASCII). What a test here cannot do is
+// run bubbletea's Program against a real TTY: input decoding, alt-screen
+// repaint and SSH behaviour stay human-verification territory.
 package tui
