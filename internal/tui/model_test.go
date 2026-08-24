@@ -69,7 +69,7 @@ func newHarness(t *testing.T) *harness {
 		inCh:     make(chan message.Message, 16),
 	}
 	h.model = New(Params{
-		Hub:             hub,
+		HubFunc:         func() ConversationSource { return hub },
 		Presence:        pv,
 		ConnChanges:     connCh,
 		PresenceChanges: h.presCh,
@@ -265,7 +265,7 @@ func TestDuplicateDeliveryNeverRepaintsThePaneTwice(t *testing.T) {
 
 func sendHarness(h *harness, sendErr error) {
 	h.model = New(Params{
-		Hub:             h.hub,
+		HubFunc:         func() ConversationSource { return h.hub },
 		Presence:        h.presence,
 		ConnChanges:     h.connCh,
 		PresenceChanges: h.presCh,
@@ -283,7 +283,7 @@ func TestEnterSendsComposedBodyToCurrentConversation(t *testing.T) {
 	h := newHarness(t)
 	var gotConv, gotBody string
 	h.model = New(Params{
-		Hub:             h.hub,
+		HubFunc:         func() ConversationSource { return h.hub },
 		Presence:        h.presence,
 		ConnChanges:     h.connCh,
 		PresenceChanges: h.presCh,
@@ -329,7 +329,7 @@ func TestEmptyEnterSendsNothing(t *testing.T) {
 	h := newHarness(t)
 	sent := false
 	h.model = New(Params{
-		Hub:             h.hub,
+		HubFunc:         func() ConversationSource { return h.hub },
 		Presence:        h.presence,
 		ConnChanges:     h.connCh,
 		PresenceChanges: h.presCh,

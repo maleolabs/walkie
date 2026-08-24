@@ -9,9 +9,18 @@ import (
 
 	"github.com/maleolabs/walkie/internal/control"
 	"github.com/maleolabs/walkie/internal/message"
-	"github.com/maleolabs/walkie/internal/messagehub"
 	"github.com/maleolabs/walkie/internal/presenceview"
 )
+
+// ConversationSource is the read surface of the messaging seam the pane
+// needs. *messagehub.Hub satisfies it; the indirection exists because the hub
+// is constructed by the assembly only AFTER the first handshake (its local
+// name is the HelloAck echo), so during startup there may be nothing to read
+// yet — the model renders an empty pane rather than pretending.
+type ConversationSource interface {
+	Conversation(key string) []message.Message
+	Conversations() []string
+}
 
 // Params wires the model to the seams earlier items exposed. Everything here
 // is a consumer interface the assembly in cmd/walkie owns the wiring for; the
@@ -25,8 +34,9 @@ import (
 // state: on any of them the model re-reads Hub/Presence snapshots, so a
 // dropped notification costs one late repaint, never stale-forever data.
 type Params struct {
-	// Hub is the messaging seam: conversation snapshots for the pane.
-	Hub *messagehub.Hub
+	// HubFunc returns the messaging seam, or nil before the first handshake
+	// completes (see ConversationSource).
+	HubFunc func() ConversationSource
 
 	// Presence is the client-side roster seam.
 	Presence *presenceview.View
@@ -308,8 +318,12 @@ func (m *Model) send(body string) error {
 // visibility extends to "who can I talk to").
 func (m *Model) refreshConversations() {
 	keys := map[string]bool{message.BroadcastConversation: true}
-	for _, k := range m.p.Hub.Conversations() {
-		keys[k] = true
+	if src := m.p.HubFunc; src != nil {
+		if hub := src(); hub != nil {
+			for _, k := range hub.Conversations() {
+				keys[k] = true
+			}
+		}
 	}
 	for _, d := range m.p.Presence.Snapshot() {
 		if d.Device != m.connectedAs { // skip self once identity is known

@@ -151,8 +151,12 @@ func (m Model) deviceLines() []string {
 // filed send has no coordinator stamp yet and says "-" instead of faking one
 // — the unstamped rendering the messagehub package comment requires.
 func (m Model) messageLines(n int) []string {
-	msgs := m.p.Hub.Conversation(m.conversationKey())
-	if len(msgs) == 0 || n <= 0 {
+	src := m.p.HubFunc
+	if n <= 0 || src == nil {
+		return []string{"(no messages yet - type below, tab switches conversation)"}
+	}
+	msgs := src().Conversation(m.conversationKey())
+	if len(msgs) == 0 {
 		return []string{"(no messages yet - type below, tab switches conversation)"}
 	}
 	if len(msgs) > n {
