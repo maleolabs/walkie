@@ -147,6 +147,59 @@ release-repro-check: ## Demonstrate reproducibility: double build, compare diges
 	rm -rf $(RELEASE_DIR)/repro-a $(RELEASE_DIR)/repro-b
 	@echo "release-repro-check: two builds of $(VERSION) produced identical digests"
 
+# The audio matrix (criterion 3): same artifact shape as `release`, but the
+# C compiler is `zig cc -target <triple>` — that is the whole point of zig
+# here. One static zig binary carries every target's libc, so there is no
+# per-target sysroot to maintain, which is exactly what adr:002-runtime-stack
+# buys with this choice.
+#
+# HONESTY REQUIREMENT, do not soften: this job must never report success by
+# skipping. Today two things are missing, and both are real blockers rather
+# than inconveniences:
+#
+#   1. zig itself may be absent (it is, in this environment and on stock CI
+#      runners) — the guard below fails loudly naming the fix.
+#   2. walkie/spk:audio-toolchain-viability was canceled before settling how
+#      libopus reaches arm64, so internal/audio's voice-tagged backend still
+#      contains ZERO C units. A green run of this target therefore proves the
+#      pipeline mechanics only — it is NOT an audio build and does not satisfy
+#      criterion 3. When the spike reruns and a binding lands, this target
+#      produces the real thing unchanged.
+#
+# Known open question recorded for whoever wires the binding: darwin/arm64
+# needs CoreAudio frameworks at link time, and zig cannot ship the Apple SDK
+# for licensing reasons. Whether the audio build covers darwin/arm64 without a
+# vendored SDK is part of what the rerun spike must answer.
+ZIG ?= zig
+
+.PHONY: release-audio
+release-audio: ## Produce audio-matrix artifacts via zig cc — fails loudly while zig or the binding is missing
+	@command -v $(ZIG) >/dev/null 2>&1 || { \
+		echo "FAIL: '$(ZIG)' not found on PATH — the audio matrix cannot run."; \
+		echo "Install zig (https://ziglang.org/download/), then re-run. This failure is"; \
+		echo "deliberate: a silent skip would report green over a build that never happened"; \
+		echo "(ts:build-release-matrix criterion 3)."; \
+		exit 1; }
+	@echo "zig $$( $(ZIG) version ) found"
+	rm -rf $(RELEASE_DIR)/audio
+	mkdir -p $(RELEASE_DIR)/audio
+	for t in $(AUDIO_MATRIX); do \
+		os=$${t%/*}; arch=$${t#*/}; \
+		case $$t in \
+			linux/amd64)    triple=x86_64-linux-gnu ;; \
+			linux/arm64)    triple=aarch64-linux-gnu ;; \
+			darwin/arm64)   triple=aarch64-macos-gnu ;; \
+			*) echo "FAIL: no zig triple mapped for $$t"; exit 1 ;; \
+		esac; \
+		mkdir -p $(RELEASE_DIR)/audio/$$os-$$arch; \
+		CC="$(ZIG) cc -target $$triple" CGO_ENABLED=1 GOOS=$$os GOARCH=$$arch \
+			$(GO) build -trimpath -buildvcs=false -tags voice \
+			-ldflags "-X main.version=$(VERSION)" \
+			-o $(RELEASE_DIR)/audio/$$os-$$arch/walkie ./cmd/walkie || exit 1; \
+	done
+	cd $(RELEASE_DIR)/audio && \
+		find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+
 .PHONY: test
 test: ## Run tests, default variant
 	CGO_ENABLED=0 $(GO) test ./...
