@@ -4,13 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository currently is
 
-**There is no application code yet.** The working tree contains exactly three things:
+walkie is a terminal-native communication tool for devices sharing a Tailscale tailnet: text, presence, and voice. The MVP's **text-and-presence core is implemented** — Go module, `cmd/walkie` (client) and `cmd/walkie-coordinator` (server), the `internal/` packages, a `Makefile`, and CI. Thirteen of `ctr:wave-1`'s sixteen work items are done; voice notes (`sto:voice-note`) are still todo and no build records or plays audio today. Later phases (calls, direct data plane, file transfer, rooms, PTY streaming, plugins, auto-update) have no code on purpose.
 
-- `eka.yaml` — repository identity (project `walkie`, namespace `walkie`)
-- `EKA` — the EKA Standard 1.0 summary this repo conforms to
-- `exchange/snapshots/` — the committed EKA knowledge snapshot (generated; see below)
-
-walkie is a terminal-native communication tool for devices sharing a Tailscale tailnet: text, presence, and voice. Its architecture is fully decided and approved, but not implemented. **The design is not in this repository's files — it is in the EKA knowledge base.** Read it there before writing code.
+**The design is not in this repository's files — it is in the EKA knowledge base.** Read it there before writing code. User-facing documentation lives in `docs/quickstart.md` and `docs/runbook.md`; release artifacts are documented in `docs/release/README.md`.
 
 ## Read the knowledge base first
 
@@ -67,11 +63,11 @@ The reason for the split: **a control-plane reconnect must never tear down an ac
 
 Do not implement a deferred feature because it seems small. The `ts:control-socket` item is in the MVP precisely so that scriptability exists without a plugin runtime.
 
-`spk:audio-toolchain-viability` blocks `sto:voice-note` and must run on real fleet ARM hardware. Its failure has a pre-agreed consequence: voice notes leave the MVP and the first release is text + presence only.
+`spk:audio-toolchain-viability` was canceled before its hardware measurements (no fleet ARM device, no zig), so `sto:voice-note` remains blocked and **no build records or plays voice notes today** — including voice-tagged ones, which currently compile audio plumbing only. Its failure has a pre-agreed consequence: if the spike is not successfully rerun, voice notes leave the MVP and the first release is text + presence only.
 
 ## Working in this repository
 
-`walkie/ctr:wave-1` holds 16 work items, all `planned`, each ticketed. The container is **`planned`, not `active`** — activating it locks `plan:roadmap-v1` to immutable, which is `/eka-execute`'s job at its Phase 0, never a side effect of ordinary work.
+`walkie/ctr:wave-1` holds 16 work items, each ticketed. Thirteen are done; `sto:voice-note` is todo and `spk:audio-toolchain-viability` was canceled before hardware measurements. The container's activation state is `/eka-execute`'s concern — activating it locks `plan:roadmap-v1` to immutable, never a side effect of ordinary work.
 
 - `/eka-discuss` — planning; creates and revises knowledge, never touches source code.
 - `/eka-execute` — execution; activates the container and drives work items through `eka transition`.
@@ -84,19 +80,27 @@ Verify knowledge changes with `eka validate` and `eka integrity check` (both mus
 
 ## Build and test commands
 
-None exist yet — there is no Go module, no `Makefile`, and no CI. When the toolchain lands via `ts:build-release-matrix`, it must produce two variants:
+The toolchain exists (`ts:build-release-matrix` is done). Two variants, per `adr:002`:
 
 ```sh
-go build ./...                  # default: pure Go, static, no C toolchain
-go build -tags voice ./...       # + audio: CGO via miniaudio + libopus
+make build          # both binaries, default variant: pure Go, static, CGO_ENABLED=0
+make build-voice    # client with the voice tag (audio plumbing; no voice features yet)
+make check-cgo      # the adr:002 guard — the default tree must build with CGO_ENABLED=0
+make test           # default variant
+make test-voice     # voice-tagged variant
+make test-race      # race detector (development check, not a release build)
+go vet ./...        # or: make lint (vet + buf lint)
+make proto          # regenerate protobuf into internal/genproto
+make proto-check    # fail if committed generated code drifted from proto/
+make tidy           # go mod tidy; fails if go.mod/go.sum changed
 ```
 
-Release targets are enumerated in `ts:build-release-matrix`: the default build for linux/amd64, linux/arm64, linux/arm, darwin/arm64, darwin/amd64, windows/amd64; the audio build for linux/amd64, linux/arm64, darwin/arm64. Read that work item before setting up the build rather than inferring it.
+Release targets are enumerated in the Makefile and owned by `ts:build-release-matrix`: the default build for linux/amd64, linux/arm64, linux/arm, darwin/arm64, darwin/amd64, windows/amd64; the audio build for linux/amd64, linux/arm64, darwin/amd64 (`make release-audio` fails loudly today — zig is absent and no C units exist yet). `make release`, `release-verify` and `release-repro-check` produce checksummed, static-link-verified, reproducibility-checked artifacts; see `docs/release/README.md`.
 
-Test infrastructure is `ts:test-harness`, and it comes before the features that depend on it: an injectable network (packet loss, latency, partition), a fake clock so no test sleeps in real time, and a null audio backend so CI needs no sound hardware.
+Test infrastructure is `ts:test-harness` (done): an injectable network (`internal/testnet`), a fake clock (`internal/clock`) so no test sleeps in real time, and a null audio backend so CI needs no sound hardware.
 
 ## Git
 
-Branches `main` and `develop`; `develop` is the working branch. Remote is `git@github.com:maleolabs/walkie.git`. The two existing commits follow Conventional Commits (`chore: project initialization`, `chore(eka): sync initialized knowledge`).
+Branches `main` and `develop`; `develop` is the working branch. Remote is `git@github.com:maleolabs/walkie.git`. Commits follow Conventional Commits. Implementation work happens on per-item branches in worktrees cut from `develop`.
 
 `exchange/snapshots/` is generated by `eka sync` and committed so knowledge travels with the repository. Regenerate it with `eka sync`, never by hand, and commit the result as its own `chore(eka):` commit.
