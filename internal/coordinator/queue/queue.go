@@ -678,6 +678,13 @@ func (q *Queue) rearmLocked() {
 	}
 	if q.timer == nil {
 		q.timer = q.clk.NewTimer(delay)
+		// Nudge even though the timer is new: a watcher parked on the
+		// PREVIOUS iteration's snapshot (timer nil → timerC nil) must loop
+		// to pick up the new channel, or its fire lands in a channel nobody
+		// reads and expiry stalls until the next unrelated mutation. Found
+		// by ts:observability-baseline's log-audit rig; without it, TTL
+		// removal silently depends on goroutine scheduling.
+		q.nudge()
 		return
 	}
 	q.timer.Reset(delay)
