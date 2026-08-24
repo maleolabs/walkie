@@ -41,6 +41,15 @@ A device that cannot install the audio dependencies is still a completely useful
 walkie client. Capability is a property of a device's build, not of the
 deployment. `walkie --version` reports which variant you have.
 
+## Release artifacts
+
+The release pipeline — the full cross-compile matrix as checksummed,
+static-link-verified, reproducibility-checked artifacts, plus the coordinator
+container image — is documented in `docs/release/README.md`. Read it before
+distributing anything: release artifacts are checksummed but **not signed**
+until phase 4's auto-update work, and that file states precisely what that
+means and what it does not.
+
 ## Development
 
 ```sh
