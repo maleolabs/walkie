@@ -307,12 +307,21 @@ func onlySubscriber(t *testing.T, srv *Server) *subscriber {
 // what is asserted.
 func waitFor(t *testing.T, within time.Duration, cond func() bool) {
 	t.Helper()
+	if !waitForOK(t, within, cond) {
+		t.Fatal("condition never became true")
+	}
+}
+
+// waitForOK is waitFor without the fatal, for call sites that diagnose the
+// failure themselves.
+func waitForOK(t *testing.T, within time.Duration, cond func() bool) bool {
+	t.Helper()
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
 		if cond() {
-			return
+			return true
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatal("condition never became true")
+	return false
 }
