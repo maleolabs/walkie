@@ -450,7 +450,16 @@ func (c *Client) backoffWait(ctx context.Context, attempt int) bool {
 //
 // Frames before HelloAck are skipped, not fatal: with presence wired the
 // roster snapshot precedes the ack by design (server.go), and mixed-fleet
-// peers may speak payloads this build ignores (adr:003). A ProtocolError,
+// peers may speak payloads this build ignores (adr:003). The roster snapshot
+// is the one exception — it is FORWARDED to the consumer handler, not
+// dropped: the coordinator sends it exactly once per connection, ahead of
+// the ack (server.go serveConn), so dropping it would leave a fresh client's
+// roster empty until the first TTL-driven refresh. Forwarding here is what
+// makes sto:terminal-ui's device list immediate instead of one TTL late.
+// Everything else pre-ack stays skipped: only presence is promised before
+// the ack, and forwarding unknown payloads to a handler that has not yet
+// been told who it is (identity lands with the ack) invites misfiled work.
+// A ProtocolError,
 // though, is the coordinator REFUSING — version gate or malformed Hello —
 // and refusing back is correct: retrying unchanged would only repeat it.
 // The ack's echoed protocol_version closes the silent-skew hole the schema
@@ -500,7 +509,12 @@ func (c *Client) handshake(sess Session) (*walkiev1.HelloAck, error) {
 				return nil, fmt.Errorf("coordinator refused handshake: %s (%s)",
 					payload.ProtocolError.GetDetail(), payload.ProtocolError.GetCode())
 			default:
-				// Roster/presence chatter ahead of the ack: keep waiting.
+				// Roster chatter ahead of the ack: forward it to the
+				// consumer (the snapshot is delivered exactly once, here —
+				// see the comment above) and keep waiting for the ack.
+				if r.env.GetPresenceUpdate() != nil && c.onEnv != nil {
+					c.onEnv(r.env)
+				}
 			}
 			// This iteration consumed the single Recv; arm another reader
 			// for the next frame.
