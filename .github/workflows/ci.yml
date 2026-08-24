@@ -21,6 +21,9 @@ name: ci
 #     is a human action; this workflow proves the pipeline produces what a
 #     human would release.
 #
+# Artifacts are checksummed but NOT signed. Signing arrives with phase-4
+# auto-update; a checksum is integrity, never authenticity or provenance.
+#
 # The audio job is expected to be RED right now. That is honest, not broken:
 # zig is absent and the audio spike was canceled before settling the libopus
 # binding, so there is nothing for zig cc to compile yet. See that job's first
