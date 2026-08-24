@@ -66,6 +66,15 @@ type app struct {
 	// and the message itself is safe in the hub log and the history store.
 	inbound chan message.Message
 
+	// onFiled is the control-socket notification hook (ts:control-socket):
+	// called for every message FILED locally — sent or received — so the
+	// local event stream can announce traffic to scripts. It receives the
+	// full message but the adapter publishes metadata only; see ctlsocket's
+	// package comment for why content stays off the wire. Nil until wired;
+	// invoked inline (never blocking) because it runs on the same read-loop
+	// goroutine as OnEnvelope.
+	onFiled func(message.Message)
+
 	// hub is built lazily on the first post-handshake envelope: its local
 	// name is the HelloAck echo (learned, never asserted), which does not
 	// exist until the supervisor completed a handshake. Guarded by mu;
@@ -161,8 +170,14 @@ func (a *app) OnEnvelope(env *walkiev1.Envelope) {
 }
 
 // notify hands one newly filed message to the TUI, dropping loudly if the UI
-// has fallen behind (see the inbound field comment).
+// has fallen behind (see the inbound field comment). The control-socket hook
+// fires regardless of that drop: a script's event stream must not go quiet
+// because the TUI is behind — and it cannot block either, since
+// ctlsocket.Server.Publish never does.
 func (a *app) notify(msg message.Message) {
+	if a.onFiled != nil {
+		a.onFiled(msg)
+	}
 	select {
 	case a.inbound <- msg:
 	default:
@@ -170,6 +185,13 @@ func (a *app) notify(msg message.Message) {
 			slog.String("message_id", msg.ID),
 		)
 	}
+}
+
+// SetOnFiled wires the control-socket notification hook. Set-before-Start
+// discipline, same as control.Client.OnEnvelope: called from assembly before
+// any traffic can flow, so no read loop observes the wiring mid-flight.
+func (a *app) SetOnFiled(fn func(message.Message)) {
+	a.onFiled = fn
 }
 
 // hubRef returns the hub once it exists, building it on first call after the

@@ -42,11 +42,16 @@
 //	-identity     X25519 identity key (default ~/.walkie/identity.key,
 //	              generated owner-only on first run; losing it forfeits the
 //	              messages queued for this device — see README)
+//	-socket       local control socket (default ~/.walkie/control.sock — the
+//	              event stream and four-command surface of ts:control-socket;
+//	              pass -socket="" to disable). Local only, owner-only; see
+//	              internal/ctlsocket's package comment for the protocol.
 //
 // What works today:
 //
 //   - `walkie` — text, presence and connection state in the terminal
-//     (sto:terminal-ui).
+//     (sto:terminal-ui), plus the local control socket for scripts
+//     (ts:control-socket).
 //   - `walkie history` — scriptable query over the local message store
 //     (sto:message-history criterion 2): by conversation, by time range, one
 //     JSON object per line. See its -help for the security statement that
@@ -72,6 +77,7 @@ import (
 	"github.com/maleolabs/walkie/internal/control"
 	"github.com/maleolabs/walkie/internal/crypto"
 	"github.com/maleolabs/walkie/internal/history"
+	"github.com/maleolabs/walkie/internal/message"
 	"github.com/maleolabs/walkie/internal/obs"
 	"github.com/maleolabs/walkie/internal/outbox"
 	"github.com/maleolabs/walkie/internal/presenceview"
@@ -101,6 +107,7 @@ func main() {
 	coordinator := flag.String("coordinator", defaultCoordinatorURL, "control-plane WebSocket URL of the coordinator")
 	dbPath := flag.String("db", defaultDBPath(), "path to the history database")
 	identityPath := flag.String("identity", defaultIdentityPath(), "path to this device's X25519 identity key")
+	socketPath := flag.String("socket", defaultSocketPath(), "local control socket path (empty disables the control socket)")
 	flag.Parse()
 
 	if *showVersion {
@@ -121,6 +128,7 @@ func main() {
 		coordinatorURL: *coordinator,
 		dbPath:         *dbPath,
 		identityPath:   *identityPath,
+		socketPath:     *socketPath,
 	}); err != nil {
 		logger.Error("walkie: fatal", slog.String("reason", err.Error()))
 		os.Exit(1)
@@ -132,6 +140,7 @@ type clientConfig struct {
 	coordinatorURL string
 	dbPath         string
 	identityPath   string
+	socketPath     string
 }
 
 // runClient assembles and runs the interactive client. Startup order is not
@@ -203,6 +212,34 @@ func runClient(logger *slog.Logger, cfg clientConfig) error {
 
 	a := newApp(clk, logger, client, box, hist, key, presence)
 	client.OnEnvelope(a.OnEnvelope)
+
+	// The local control socket (ts:control-socket): auxiliary by design, so
+	// ANY startup failure degrades to one warning and a socket-less run —
+	// including windows (no Unix sockets in the form this design recognises)
+	// and another walkie already holding the path (ErrInUse; that instance
+	// owns the surface). Text and presence never depended on it.
+	if cfg.socketPath != "" {
+		srv, err := startControlSocket(cfg.socketPath, ctlDeps{
+			app:      a,
+			client:   client,
+			mach:     mach,
+			presence: presence,
+		}, logger)
+		if err != nil {
+			logger.Warn("control socket disabled",
+				slog.String("path", cfg.socketPath),
+				slog.String("reason", err.Error()),
+			)
+		} else {
+			defer srv.Close()
+			// Message events carry metadata only — no body ever crosses the
+			// control socket (ctlsocket package comment explains the line).
+			a.SetOnFiled(func(msg message.Message) {
+				srv.PublishMessage(msg.ID, msg.Sender, msg.Recipient,
+					message.ConversationKeyFor(client.ConnectedAs(), msg))
+			})
+		}
+	}
 
 	// Subscribe-first (Machine.Subscribe's rule), then seed the UI from the
 	// direct read: a change landing between the two appears in both — a

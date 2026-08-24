@@ -372,7 +372,10 @@ func TestSubscribeDeliversSnapshotThenLiveEvents(t *testing.T) {
 	h.srv.PublishPresence(PresenceEntry{Device: "gamma", Online: true})
 	h.srv.PublishMessage("01JXYZ", "alpha", "beta", "dm:beta")
 
-	want := []struct{ event string; check func(map[string]any) }{
+	want := []struct {
+		event string
+		check func(map[string]any)
+	}{
 		{"conn", func(m map[string]any) {
 			if m["from"] != "connecting" || m["to"] != "online" || m["reason"] != "handshake completed" {
 				t.Errorf("conn event fields = %v", m)
