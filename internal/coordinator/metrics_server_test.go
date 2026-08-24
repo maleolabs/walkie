@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime"
 	"testing"
 	"time"
 
@@ -72,6 +73,26 @@ func metricValue(t *testing.T, m *obs.Metrics, name string, wantLabels map[strin
 	}
 	t.Fatalf("series %s %v not found in exposition", name, wantLabels)
 	return 0
+}
+
+// metricValueEventually returns once the named series reaches want, yielding
+// to the scheduler between reads (bounded, then Fatal). It exists because
+// delivery evidence does not happen-after counting: production increments
+// walkie_messages_total AFTER the live fan-out writes (routing.go) and after
+// the offline sink's Deliver returns on the hold path, so a frame or sink
+// signal observed by the test proves the message was accepted but NOT that
+// the increment has landed yet. Reading immediately races that window under
+// load (sighted as intermittent 0/1-vs-1 and 1-vs-2 counter reads). The
+// bound keeps the assertion's teeth: a hold or route path that never counts —
+// the regression this file exists to catch — still fails here, via timeout.
+func metricValueEventually(t *testing.T, m *obs.Metrics, name string, wantLabels map[string]string, want float64) float64 {
+	t.Helper()
+	got := metricValue(t, m, name, wantLabels)
+	for i := 0; i < 200_000 && got < want; i++ {
+		runtime.Gosched()
+		got = metricValue(t, m, name, wantLabels)
+	}
+	return got
 }
 
 // startMetricsServer runs a bare Server (no tracker, no sink) on the
@@ -226,7 +247,9 @@ func TestMessagesCounterCountsIngressNotFanout(t *testing.T) {
 	if got := nextTextEnvelope(t, phone); got.GetDirectMessage() == nil {
 		t.Fatalf("phone got %T, want DirectMessage", got.GetPayload())
 	}
-	if got := metricValue(t, m, "walkie_messages_total", nil); got != 1 {
+	// Receipt proves acceptance; the increment lands just after the fan-out
+	// write (see metricValueEventually), so wait for it instead of racing it.
+	if got := metricValueEventually(t, m, "walkie_messages_total", nil, 1); got != 1 {
 		t.Fatalf("messages after one direct = %v, want 1", got)
 	}
 
@@ -241,8 +264,9 @@ func TestMessagesCounterCountsIngressNotFanout(t *testing.T) {
 			t.Fatalf("%s got %T, want BroadcastMessage", watcher.name, got.GetPayload())
 		}
 	}
-	// ...but still ONE ingressed message each, so two total.
-	if got := metricValue(t, m, "walkie_messages_total", nil); got != 2 {
+	// ...but still ONE ingressed message each, so two total. Same
+	// increment-after-write window as above.
+	if got := metricValueEventually(t, m, "walkie_messages_total", nil, 2); got != 2 {
 		t.Fatalf("messages after one direct + one broadcast fanned to two devices = %v, want 2 (ingress-counted)", got)
 	}
 }
@@ -287,13 +311,11 @@ func TestMessagesCounterCountsHeldOfflineMessages(t *testing.T) {
 	laptop.send(t, env)
 
 	// The sink receiving the envelope is the causal proof that the full
-	// accept path ran; the counter is read only after that point.
-	select {
-	case <-sink.recipients:
-	case <-time.After(5 * time.Second):
-		t.Fatal("offline delivery never reached the sink")
-	}
-	if got := metricValue(t, m, "walkie_messages_total", nil); got != 1 {
+	// accept path ran — but the counter is incremented AFTER Deliver returns
+	// (routing.go holds-then-counts), so the sink signal does not
+	// happen-after the increment. Wait for the counter itself, bounded: a
+	// hold path that never counts still fails here.
+	if got := metricValueEventually(t, m, "walkie_messages_total", nil, 1); got != 1 {
 		t.Fatalf("messages after one held direct = %v, want 1 (held counts as accepted)", got)
 	}
 

@@ -53,6 +53,31 @@ const e2eTTL = 45 * time.Second
 // rigEpoch anchors the rig's fake clock.
 var rigEpoch = time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 
+// syncBuffer is a log capture that is safe to share between the server's
+// goroutines and the test goroutine. The rig hands one buffer to every
+// component's slog handler — server dispatch, tracker, queue, keystore — and
+// tests read it back with String while the server is still running; a plain
+// bytes.Buffer is not safe for that concurrent use, and -race flags exactly
+// that pair (a handleHello Info on a server goroutine vs. a test-side read).
+// Every write and every read takes the same mutex, so every test built on the
+// rig inherits race-safe capture.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // pipeListener hands the server pre-connected link endpoints from Accept, so
 // tests control exactly which simulated tailnet peers exist without real
 // sockets. Serve's injected-listener contract (see Server's type comment)
@@ -121,8 +146,10 @@ type presenceRig struct {
 	resolver *tsauth.StaticResolver
 	clk      *clock.Fake
 	tracker  *presence.Tracker
-	logs     *bytes.Buffer
-	ln       *pipeListener
+	// logs is the shared slog sink; syncBuffer because server goroutines
+	// write it while tests read it (see the type comment).
+	logs *syncBuffer
+	ln   *pipeListener
 
 	// st and srv are exposed for suites that extend the rig — the offline
 	// queue tests wire a real queue over THIS store (one store per process,
@@ -141,7 +168,7 @@ func startPresenceRig(t *testing.T, sink ...OfflineSink) *presenceRig {
 	t.Helper()
 
 	clk := clock.NewFake(rigEpoch)
-	logs := &bytes.Buffer{}
+	logs := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, nil))
 
 	st, err := store.Open(t.TempDir()+"/coord.db", clk)
@@ -365,6 +392,29 @@ func (c *testClient) heartbeat(t *testing.T) {
 	c.send(t, &walkiev1.Envelope{Payload: &walkiev1.Envelope_Heartbeat{Heartbeat: &walkiev1.Heartbeat{}}})
 	c.send(t, helloEnvelope(walkiev1.MaxProtocolVersion))
 	c.awaitHelloAck(t)
+}
+
+// syncProbe sends a Heartbeat and waits for its echo — the neutral causal
+// barrier. Dispatch is sequential per connection, so receiving the echo
+// proves the server dispatched the Heartbeat, which proves every envelope it
+// wrote BEFORE the probe has landed in the wire record.
+//
+// Why not a follow-up Hello: on a queue-wired rig a Hello is NOT
+// observationally neutral. Resume returns the whole unacked suffix every
+// time it is asked (at-least-once; rows leave retention only via QueueAck),
+// so a probe Hello carrying a stale last_acked_position is itself a second
+// resume request whose duplicate frames follow its own ack — a wire-count
+// assertion sampling right after that ack then races them (sighted as
+// intermittent 4/5/6-vs-3 counts under load). A Heartbeat asserts nothing,
+// drains nothing, and its echo carries the same sequential-dispatch proof.
+func (c *testClient) syncProbe(t *testing.T) {
+	t.Helper()
+	c.send(t, &walkiev1.Envelope{Payload: &walkiev1.Envelope_Heartbeat{Heartbeat: &walkiev1.Heartbeat{}}})
+	for {
+		if env := c.nextEnvelope(t); env.GetHeartbeat() != nil {
+			return
+		}
+	}
 }
 
 // nextEnvelope returns the next envelope of any kind, failing loudly on
