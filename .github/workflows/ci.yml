@@ -1,15 +1,30 @@
 name: ci
 
-# The full release pipeline — the complete cross-compile matrix, signed
-# artifacts, the coordinator container image — belongs to its own work item:
+# The release pipeline lives here now. Owned by:
 #
 #   eka get walkie/ts:build-release-matrix
 #
-# This workflow is the floor: it enforces the invariants that are cheap to check
-# and expensive to discover late. The cross-compile smoke job in particular
-# exists because the fleet includes ARM devices, and the failure mode it catches
-# — a dependency that quietly needs CGO — would otherwise surface only at
-# release time.
+# which took the former smoke-build floor and made it real: the complete
+# default-build matrix produced as checksummed artifacts (release), static
+# linking and CGO-freeness asserted on the produced bytes (release-verify,
+# inside the Makefile), reproducibility demonstrated by double build
+# (reproducibility), the zig cc audio matrix (audio), and the coordinator
+# container image (container).
+#
+# Two properties this workflow deliberately keeps, inherited from the floor:
+#
+#   - No C toolchain is installed anywhere in the default-build path. If a
+#     step there needs one, a dependency has broken adr:002-runtime-stack's
+#     pure-Go property, and that is an architectural problem, not a CI
+#     problem.
+#   - Nothing is pushed anywhere: no tags, no releases, no registry. Releasing
+#     is a human action; this workflow proves the pipeline produces what a
+#     human would release.
+#
+# The audio job is expected to be RED right now. That is honest, not broken:
+# zig is absent and the audio spike was canceled before settling the libopus
+# binding, so there is nothing for zig cc to compile yet. See that job's first
+# step before "fixing" the red.
 
 on:
   push:
@@ -48,21 +63,9 @@ jobs:
       - name: Module is tidy
         run: make tidy
 
-  cross:
-    name: cross-compile smoke
+  release:
+    name: release artifacts (default build)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goos: linux
-            goarch: arm64
-          - goos: linux
-            goarch: arm
-          - goos: darwin
-            goarch: arm64
-          - goos: windows
-            goarch: amd64
     steps:
       - uses: actions/checkout@v4
 
@@ -71,15 +74,91 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # No C toolchain is installed in this job on purpose. If this step needs
-      # one, a dependency has broken the pure-Go property and that is an
-      # architectural problem, not a CI problem.
-      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
-        env:
-          CGO_ENABLED: "0"
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: go build ./...
+      # One job, not a GOOS/GOARCH matrix, on purpose. The target list belongs
+      # to the Makefile (DEFAULT_MATRIX) — duplicating it as YAML matrix
+      # entries would create two lists that can drift apart silently. It also
+      # lets criterion 6's SHA256SUMS cover the whole matrix as ONE artifact,
+      # which is what gets verified against after download.
+      #
+      # Criteria 1 and 2 are settled by these two lines plus the assertions
+      # inside release-verify: every target produced with CGO_ENABLED=0 and no
+      # C toolchain present, then the produced bytes themselves checked for
+      # static linkage and CGO-freeness — asserted, not commented.
+      - name: Produce checksummed artifacts for every default target
+        run: make release
+
+      - name: Verify artifacts are static and CGO-free
+        run: make release-verify
+
+  reproducibility:
+    name: builds are reproducible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Criterion 4 says the same commit produces identical artifacts. That is
+      # a claim about bytes, so CI settles it with bytes: two full runs of the
+      # release target from one checkout, digest files diffed. Without this
+      # step the property rots silently the first time someone adds a
+      # timestamp to an ldflags stamp; with it, that commit goes red.
+      - name: Same commit, two builds, identical digests
+        run: make release-repro-check
+
+  audio:
+    name: audio build (zig cc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # This job is ALLOWED TO BE RED, and must never be made green by
+      # skipping. Criterion 3 needs zig cc, but two things are missing today:
+      # zig is not on stock runners, and walkie/spk:audio-toolchain-viability
+      # was canceled before settling how libopus reaches arm64 — so the voice
+      # tree contains no C units at all yet, and even a green run here would
+      # prove pipeline mechanics, not an audio build. A missing toolchain
+      # therefore fails LOUDLY below. When the spike reruns and a binding
+      # lands, installing zig here is the only change this job needs.
+      - name: zig toolchain must be present
+        run: |
+          if ! command -v zig >/dev/null 2>&1; then
+            echo "::error::zig is not installed — the audio-build matrix cannot run (criterion 3 of ts:build-release-matrix). Install zig, or gate this job only after walkie/spk:audio-toolchain-viability reruns and settles the libopus binding. Do NOT convert this failure into a silent skip."
+            exit 1
+          fi
+
+      - name: Build audio matrix via zig cc
+        run: make release-audio
+
+  container:
+    name: coordinator container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Builds the image and stops there. Running it — proving a tsnet join
+      # works without host networking — needs a live tailnet and an auth key,
+      # which no CI environment here provides, so runtime behaviour remains
+      # UNVERIFIED by this workflow. The verification procedure that would
+      # settle it is written down in deploy/coordinator/README.md. Host
+      # networking and privileged mode are forbidden answers to that gap, not
+      # workarounds for it: see the Dockerfile header.
+      - name: Build image (never pushed)
+        run: |
+          docker build -f deploy/coordinator/Dockerfile \
+            --build-arg VERSION="$(git rev-parse HEAD)" \
+            -t walkie-coordinator:ci .
+
+      - name: Image exists
+        run: docker image inspect walkie-coordinator:ci > /dev/null
 
   proto:
     name: proto
