@@ -47,7 +47,7 @@ ARM devices in the fleet — with no C toolchain. Audio needs CGO, so it lives
 behind the `voice` build tag.
 
 ```sh
-make build         # default: text, presence, files. Pure Go, static.
+make build         # default: pure Go, static; text and presence work fully.
 make build-voice   # adds audio capture and playback.
 make check-cgo     # the guard: the default tree must build with CGO_ENABLED=0
 ```
