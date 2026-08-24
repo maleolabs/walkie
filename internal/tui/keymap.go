@@ -20,14 +20,14 @@ import "strings"
 type action int
 
 const (
-	actNone action = iota // matched no binding; the key types into the input
-	actSend               // send the composed message
-	actNextConv           // next conversation
-	actPrevConv           // previous conversation
-	actJumpConv           // jump to the Nth conversation (keys "1".."9")
-	actHelp               // toggle the help overlay
-	actQuit               // exit walkie
-	actCloseHelp          // close the help overlay without quitting
+	actNone      action = iota // matched no binding; the key types into the input
+	actSend                    // send the composed message
+	actNextConv                // next conversation
+	actPrevConv                // previous conversation
+	actJumpConv                // jump to the Nth conversation (keys "1".."9")
+	actHelp                    // toggle the help overlay
+	actQuit                    // exit walkie
+	actCloseHelp               // close the help overlay without quitting
 )
 
 // binding is one row of the single-source table. keys are the bubbletea key

@@ -8,8 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/maleolabs/walkie/internal/control"
 	"github.com/maleolabs/walkie/internal/clock"
+	"github.com/maleolabs/walkie/internal/control"
 	"github.com/maleolabs/walkie/internal/message"
 	"github.com/maleolabs/walkie/internal/messagehub"
 	"github.com/maleolabs/walkie/internal/presenceview"
