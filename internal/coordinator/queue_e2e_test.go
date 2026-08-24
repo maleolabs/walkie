@@ -109,12 +109,14 @@ func TestOfflineDeliveryResumesByPositionCountedOnWire(t *testing.T) {
 	phone2.assertSilent(t) // the suffix ends where the count said it would
 
 	// Causal close of the measurement window: dispatch is sequential per
-	// connection, so this probe's ack proves every frame the server was ever
+	// connection, so this probe's echo proves every frame the server was ever
 	// going to write for the drain has landed in the wire record. Only now
 	// may the exact-count assertion run — earlier, a slow replay would not
-	// have arrived yet and a full-replay bug could slip the count.
-	phone2.send(t, helloEnvelope(walkiev1.MaxProtocolVersion))
-	phone2.awaitHelloAck(t)
+	// have arrived yet and a full-replay bug could slip the count. The probe
+	// is a Heartbeat, not a Hello: with positions 1..3 still unacked, a Hello
+	// would itself re-resume the suffix and race duplicate frames into this
+	// very count (see syncProbe).
+	phone2.syncProbe(t)
 	assertWireDeliveries(t, phone2, wireDelivery{id: heldIDs[0], position: 1},
 		wireDelivery{id: heldIDs[1], position: 2},
 		wireDelivery{id: heldIDs[2], position: 3})
@@ -145,9 +147,10 @@ func TestOfflineDeliveryResumesByPositionCountedOnWire(t *testing.T) {
 	phone3.assertSilent(t)
 
 	// Same causal close, then the tight bound: one frame, ONE ulid — the
-	// third message's own, never its already-acked siblings'.
-	phone3.send(t, helloEnvelope(walkiev1.MaxProtocolVersion))
-	phone3.awaitHelloAck(t)
+	// third message's own, never its already-acked siblings'. Heartbeat
+	// probe again: position 3 is still unacked here, so a Hello probe would
+	// re-resume it behind its own ack (see syncProbe).
+	phone3.syncProbe(t)
 	assertWireDeliveries(t, phone3, wireDelivery{id: heldIDs[2], position: 3})
 
 	// The held envelopes kept their ingress identity: dedup keys survive.

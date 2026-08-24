@@ -1,7 +1,6 @@
 package coordinator
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -41,11 +40,13 @@ const (
 
 // startServer runs a Server on a fresh listener bound to
 // [simulatedTailnetAddr] and returns its dial address plus the log buffer.
-// The returned cancel stops the server and waits for it to exit.
-func startServer(t *testing.T, resolver tsauth.Resolver) (addr string, logs *bytes.Buffer, cancel func()) {
+// The returned cancel stops the server and waits for it to exit. The buffer
+// is a syncBuffer: the server's goroutines log into it while tests read it
+// back, and a plain bytes.Buffer trips -race on exactly that pair.
+func startServer(t *testing.T, resolver tsauth.Resolver) (addr string, logs *syncBuffer, cancel func()) {
 	t.Helper()
 
-	logs = &bytes.Buffer{}
+	logs = &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, nil))
 	clk := clock.NewFake(time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC))
 
@@ -377,7 +378,7 @@ func TestUnhandledPayloadIgnoredConnectionStaysOpen(t *testing.T) {
 func TestShutdownClosesLiveConnectionWithinGrace(t *testing.T) {
 	resolver := tsauth.NewStaticResolver(nil)
 
-	logs := &bytes.Buffer{}
+	logs := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, nil))
 	clk := clock.NewFake(time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC))
 

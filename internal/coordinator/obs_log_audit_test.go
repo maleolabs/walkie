@@ -1,7 +1,6 @@
 package coordinator
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -46,7 +45,7 @@ import (
 func startAuditRig(t *testing.T) (*presenceRig, *obs.Metrics, *queue.Queue) {
 	t.Helper()
 
-	logs := &bytes.Buffer{}
+	logs := &syncBuffer{} // race-safe capture: server goroutines write while the audit reads
 	logger := obs.NewLogger(logs, slog.LevelDebug)
 	clk := clock.NewFake(rigEpoch)
 
