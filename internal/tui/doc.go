@@ -44,4 +44,37 @@
 // Kitty keyboard protocol is detected, as an enhancement. This is a constraint
 // discovered by investigation in fnd:terminal-audio-constraints, not a product
 // preference, so do not "fix" it by polling.
+//
+// # What is built here (sto:terminal-ui, slice 1)
+//
+// The core Bubbletea model and its seams:
+//
+//   - [Model] renders four regions: a status line that is ALWAYS on screen
+//     carrying the connection state from control.Machine's subscription
+//     (criterion 3 — degraded and the reconnecting states included), a device
+//     list fed by presenceview showing presence verdicts and custom status
+//     without issuing a command (criterion 2), a per-conversation message pane
+//     fed by messagehub snapshots, and an input line. Every message line shows
+//     BOTH timestamps, sent then received, unmerged — skew stays legible — and
+//     a locally filed send renders its missing coordinator stamp as "-",
+//     never as a fabricated time.
+//   - keymap.go is the SINGLE SOURCE for key bindings and help (criterion 6):
+//     Update dispatches through the same table the help overlay renders, so
+//     the two cannot drift. Keymap() exports the table for programmatic
+//     enumeration by ts:docs-quickstart-runbook.
+//   - The model consumes only the exposed seams — messagehub.Hub,
+//     presenceview.View, control.State/Change — as plain Go values and
+//     channels; it never imports generated protobuf types and never reaches
+//     into coordinator internals. Assembly (dialing, identity, outbox,
+//     history, ack discipline) lives in cmd/walkie.
+//   - Models are tested without a terminal: drive Update with synthetic
+//     messages and assert on View() strings. No test sleeps; no real clock is
+//     involved (the model renders stamps carried on messages and takes no
+//     time source of its own).
+//
+// Slice 2 owns the constrained-terminal gates: the hard 80-column floor,
+// NO_COLOR / TERM=dumb legibility verification, and headless-over-SSH
+// behaviour. This slice already designs within them — ASCII-only chrome,
+// state carried by words as well as position, rune-based width clipping — but
+// does not gate on them.
 package tui
