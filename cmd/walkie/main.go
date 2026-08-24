@@ -102,7 +102,7 @@ func main() {
 	// Subcommand dispatch happens before global flag parsing: flag.Parse stops
 	// at the first non-flag argument, so "walkie history ..." would otherwise
 	// fall through to the interactive client below. dispatchSubcommand's
-	// switch and help.go's subcommandSummaries are pinned together by
+	// runner table and help.go's subcommandSummaries are pinned together by
 	// help_test.go — a subcommand may exist in one place only if it exists in
 	// both.
 	if len(os.Args) > 1 {

@@ -24,7 +24,7 @@ import (
 )
 
 // subcommandSummaries lists walkie's non-interactive subcommands in help
-// order. main()'s dispatch switch handles these names; help_test.go asserts
+// order. main()'s dispatch table handles these names; help_test.go asserts
 // the two agree, so a new subcommand cannot ship undocumented (or documented
 // but undispatchable).
 var subcommandSummaries = []struct{ name, summary string }{
@@ -32,19 +32,24 @@ var subcommandSummaries = []struct{ name, summary string }{
 	{"help", "show this help"},
 }
 
+// subcommandRunners is the authority on which names are subcommands: a name
+// is dispatched if and only if it is a key here. The map exists so the set of
+// dispatched names is enumerable — help_test.go walks both directions of the
+// pairing with subcommandSummaries, which documents exactly these.
+var subcommandRunners = map[string]func(args []string, stdout, stderr io.Writer) int{
+	"history": runHistory,
+	"help":    runHelp,
+}
+
 // dispatchSubcommand runs the named subcommand if one matches and reports
 // whether it did, returning the process exit code instead of exiting so tests
-// can drive it. main() supplies the os.Exit. This switch is the authority on
-// which names are subcommands; subcommandSummaries documents exactly these,
-// and help_test.go walks both directions of that pairing.
+// can drive it. main() supplies the os.Exit.
 func dispatchSubcommand(name string, args []string, stdout, stderr io.Writer) (int, bool) {
-	switch name {
-	case "history":
-		return runHistory(args, stdout, stderr), true
-	case "help":
-		return runHelp(args, stdout, stderr), true
+	run, ok := subcommandRunners[name]
+	if !ok {
+		return 0, false
 	}
-	return 0, false
+	return run(args, stdout, stderr), true
 }
 
 // runHelp prints the whole command surface and exits 0. It never touches the

@@ -51,11 +51,10 @@ func TestHelpMatchesTUIOverlayWordForWord(t *testing.T) {
 }
 
 // TestHelpListsEverySubcommand pins help.go's subcommandSummaries table to
-// dispatchSubcommand's switch: every documented name must actually dispatch
-// (a documented-but-undispatchable subcommand is a lie), and an unknown name
-// must not dispatch. The reverse direction — a dispatched name missing from
-// the table — is covered by review of the switch, which sits directly above
-// the table in help.go so the two are read together.
+// dispatchSubcommand's runner table in both directions: every documented name
+// must actually dispatch (a documented-but-undispatchable subcommand is a
+// lie), every dispatched name must be documented (an undocumented subcommand
+// is invisible to help), and an unknown name must not dispatch.
 func TestHelpListsEverySubcommand(t *testing.T) {
 	for _, sc := range subcommandSummaries {
 		var out, errOut bytes.Buffer
@@ -73,6 +72,21 @@ func TestHelpListsEverySubcommand(t *testing.T) {
 	}
 	if _, handled := dispatchSubcommand("nosuchsubcommand", nil, &bytes.Buffer{}, &bytes.Buffer{}); handled {
 		t.Error("unknown subcommand was dispatched")
+	}
+}
+
+// TestEveryDispatchedSubcommandIsDocumented is the reverse pin: the keys of
+// subcommandRunners are exactly the names dispatchSubcommand will run, so any
+// case added there without a subcommandSummaries entry fails here.
+func TestEveryDispatchedSubcommandIsDocumented(t *testing.T) {
+	documented := make(map[string]bool, len(subcommandSummaries))
+	for _, sc := range subcommandSummaries {
+		documented[sc.name] = true
+	}
+	for name := range subcommandRunners {
+		if !documented[name] {
+			t.Errorf("subcommand %q is dispatched but not documented", name)
+		}
 	}
 }
 
