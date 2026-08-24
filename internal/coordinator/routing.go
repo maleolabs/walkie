@@ -208,6 +208,10 @@ func (s *Server) handleDirect(ctx context.Context, out *connWriter, id tsauth.Id
 		// Counted at ingress, once per accepted message — not per delivered
 		// copy (a broadcast fans out to N sockets but is ONE message), so
 		// the scraper's rate means messages/second, not deliveries/second.
+		// Accepted means delivered live OR held by the offline sink (the
+		// second counting site, in deliverUnroutable); refusals count
+		// nowhere. Broadcast counts unconditionally below because it has no
+		// post-validation refusal path — an empty room is a success.
 		s.metrics.IncMessages()
 		s.logger.Info("direct message routed",
 			slog.String("sender", sender),
@@ -343,6 +347,15 @@ func (s *Server) deliverUnroutable(ctx context.Context, out *connWriter, sender,
 			)
 			return
 		default:
+			// Held = accepted (ts:observability-baseline): this message was
+			// validated and taken into retention exactly like a live-routed
+			// one, so it counts under walkie_messages_total too — leaving it
+			// out made all offline traffic invisible to the messages/second
+			// rate while a broadcast into an EMPTY room still counted. The
+			// DEVICE_UNKNOWN and SIZE_CAP refusals above stay uncounted:
+			// refused is not accepted, and the cap already has its own
+			// series (walkie_queue_evictions_total{reason="size_cap"}).
+			s.metrics.IncMessages()
 			s.logger.Info("direct message held: recipient offline, handed to offline sink",
 				slog.String("sender", sender),
 				slog.String("recipient", recipient),

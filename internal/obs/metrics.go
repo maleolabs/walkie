@@ -39,9 +39,13 @@ import (
 // path. A histogram has no series to bind: probing reveals only that SOME
 // bucket moved, indistinguishable from background chatter.
 //
-// What an endpoint observer CAN infer: the total number of retained messages
-// (histogram sum), how many recipients currently hold queued mail (count),
-// and the shape of the depth distribution (one hoarder vs even spread).
+// What an endpoint observer CAN infer, in the histogram's real units: count
+// is depth observations accumulated since process start (one per enqueue,
+// ack deletion and TTL eviction) and sum is the accumulated observed depth
+// across those events — aggregates over EVENTS, not a per-scrape snapshot,
+// so neither is derivable as current state ("retained right now", "recipients
+// holding mail now"). Their ratio is an average depth per mutation, and the
+// bucket shape shows whether depth concentrates (one hoarder) or spreads.
 //
 // What an observer CANNOT infer: which device holds mail, how deep ANY named
 // or pseudonymous device's queue is, whether a specific device is offline

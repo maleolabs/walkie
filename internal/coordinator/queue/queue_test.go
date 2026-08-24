@@ -67,6 +67,18 @@ func awaitSweep(t *testing.T, q *Queue) {
 	}
 }
 
+// awaitParked blocks until the watcher announces its next park, failing
+// loudly on timeout — same shape as awaitSweep, over the test-only parked
+// seam instead of the swept event.
+func awaitParked(t *testing.T, q *Queue) {
+	t.Helper()
+	select {
+	case <-q.parked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher never parked; the watch loop or a rearm nudge is broken")
+	}
+}
+
 // directEnv builds a stamped envelope as routing.go's stampedDelivery would
 // hand it to the sink: identity fields set, position zero (live traffic).
 func directEnv(id, body string, at time.Time) *walkiev1.Envelope {
@@ -260,6 +272,38 @@ func TestTTLEvictionRemovesAndLogsContentFree(t *testing.T) {
 	if pos := enqueueOK(t, q, recipient, directEnv("m-after", "body", clk.Now())); pos != 3 {
 		t.Fatalf("position after eviction = %d, want 3 (counter never restarts)", pos)
 	}
+}
+
+// TestWatcherParkedAtNilTimerSnapshotStillSeesArm makes the rearm race
+// deterministic. The parked seam holds the watcher at a NIL-timer snapshot;
+// the enqueue then performs the nil→armed transition — exactly the one whose
+// nudge keeps the watcher's life possible. Without that nudge, the watcher
+// would stay parked on a nil channel while the timer fired into a channel
+// nobody selected on, and TTL expiry would stall until some unrelated
+// mutation; whether that bug showed up used to depend on goroutine
+// scheduling, which ts:test-harness forbids a test to depend on. Here every
+// step is ordered by a received event, and both failure modes are loud
+// timeouts, never sleeps.
+func TestWatcherParkedAtNilTimerSnapshotStillSeesArm(t *testing.T) {
+	clk := testClock()
+	st := mustOpenStore(t, t.TempDir()+"/coord.db", clk)
+	q := mustNewQueue(t, st, clk, &bytes.Buffer{})
+
+	// Hold the watcher at its first park: empty queue, timer nil.
+	awaitParked(t, q)
+
+	// The arming transition under test: nil timer → armed at the new
+	// deadline (rearmLocked's q.timer == nil branch).
+	enqueueOK(t, q, "laptop.tail-scale.ts.net.", directEnv("m-race", "race", clk.Now()))
+
+	// Wait until the watcher has consumed the wake, re-snapshotted the armed
+	// timer and re-parked on the REAL timer channel — from here the test is
+	// fully ordered, not lucky.
+	awaitParked(t, q)
+
+	clk.Advance(testTTL + time.Minute)
+	awaitSweep(t, q)
+	assertPositions(t, resumePositions(t, q, "laptop.tail-scale.ts.net.", 0))
 }
 
 // TestExpiredDuringDowntimeEvictedAtStartup makes the reload semantics

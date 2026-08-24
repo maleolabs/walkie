@@ -74,6 +74,17 @@ type Queue struct {
 	// non-blocking: nobody listening loses nothing.
 	swept chan struct{}
 
+	// parked is a TEST-ONLY seam: watch() signals it just before parking on
+	// each iteration's timer snapshot, so a test can hold the watcher at a
+	// KNOWN snapshot state — the nil-timer park being the one that matters —
+	// and then drive enqueue → clock advance in a fully ordered sequence.
+	// That is what makes rearmLocked's stale-snapshot race deterministic:
+	// without the seam, whether the watcher has re-snapshotted when the test
+	// advances the clock is pure scheduling luck, exactly what
+	// ts:test-harness forbids a test to depend on. Buffered, sent
+	// non-blocking: production has no listener and loses nothing.
+	parked chan struct{}
+
 	// atRest is ts:queue-sealed-box's encryption seam (see sealed.go): what
 	// a body looks like while it rests in storage. Nil — the plain [New]
 	// shape — stores and reads bytes verbatim; NewSealed wires the sealed
@@ -175,6 +186,7 @@ func newQueue(st *store.Store, clk clock.Clock, ttl time.Duration, maxSize int, 
 		closed:  make(chan struct{}),
 		wake:    make(chan struct{}, 1),
 		swept:   make(chan struct{}, 1),
+		parked:  make(chan struct{}, 1),
 	}
 
 	// Startup sweep: whatever lapsed while the process was down is evicted
@@ -495,6 +507,15 @@ func (q *Queue) watch() {
 		var timerC <-chan time.Time
 		if tm != nil {
 			timerC = tm.C()
+		}
+
+		// Park announcement (the parked field's comment has the why): sent
+		// AFTER the snapshot is taken and BEFORE the select, so a receiver
+		// knows the watcher is committed to exactly this iteration's timer
+		// state.
+		select {
+		case q.parked <- struct{}{}:
+		default:
 		}
 
 		select {

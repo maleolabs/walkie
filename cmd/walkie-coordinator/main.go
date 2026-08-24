@@ -105,7 +105,8 @@ func main() {
 // Startup order matters and is not interchangeable: the store opens BEFORE
 // the tailnet join, so a misconfigured database fails fast and locally
 // instead of after a network round trip; the listener comes from tsnet
-// itself, which is what makes the tailnet-only bind (criterion 3) structural
+// itself, which is what makes the tailnet-only bind (ts:coordinator-skeleton
+// criterion 3) structural
 // rather than a matter of getting an address string right.
 func run(logger *slog.Logger) error {
 	cfg, err := loadConfig()
@@ -113,7 +114,8 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	// Criterion 5: first start creates and migrates the schema with no
+	// ts:coordinator-skeleton criterion 5: first start creates and migrates
+	// the schema with no
 	// manual step; later starts apply only new migrations. All timestamps
 	// the store writes come from the injected clock.
 	st, err := store.Open(cfg.storePath, clock.Real())
@@ -181,7 +183,8 @@ func run(logger *slog.Logger) error {
 	}
 	obsHandler := obs.NewHandler(metrics, health)
 
-	// Criterion 1, production path: this process IS a tailnet node. tsnet
+	// ts:coordinator-skeleton criterion 1, production path: this process IS a
+	// tailnet node. tsnet
 	// brings its own WireGuard, DERP fallback and node identity inside the
 	// container — no host networking, no Tailscale sidecar (adr:001). The
 	// auth key is passed to tsnet directly and is never logged.
@@ -197,7 +200,8 @@ func run(logger *slog.Logger) error {
 		slog.String("state_dir", cfg.stateDir),
 	)
 
-	// Criterion 2, production path: WhoIs-backed resolution against this
+	// ts:coordinator-skeleton criterion 2, production path: WhoIs-backed
+	// resolution against this
 	// node's local daemon. Constructing the resolver starts the join, so a
 	// bad auth key or unreachable coordination server surfaces HERE, with
 	// the knobs that fix it named in the wrapper below.
@@ -206,7 +210,8 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("join tailnet (check WALKIE_TAILNET_AUTHKEY and WALKIE_STATE_DIR): %w", err)
 	}
 
-	// Criterion 3, production path: tsnet's listener binds ONLY the node's
+	// ts:coordinator-skeleton criterion 3, production path: tsnet's listener
+	// binds ONLY the node's
 	// tailnet IP — there is no code path here that could bind a wildcard,
 	// because no address string is ever parsed or constructed locally. The
 	// property is proven by test in internal/coordinator (server_test.go);
@@ -226,7 +231,8 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("control plane listening", slog.String("addr", ln.Addr().String()))
 
-	// Criterion 5, production path for metrics and health: the SAME tsnet
+	// ts:observability-baseline criterion 5, production path for metrics and
+	// health: the SAME tsnet
 	// listener seam as the control plane — there is no code path here that
 	// could bind a wildcard, because no address string is ever parsed or
 	// constructed locally. The property is proven by test twice over

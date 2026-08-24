@@ -14,6 +14,7 @@ import (
 	"github.com/maleolabs/walkie/internal/clock"
 	"github.com/maleolabs/walkie/internal/coordinator/tsauth"
 	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
+	"github.com/maleolabs/walkie/internal/message"
 	"github.com/maleolabs/walkie/internal/messagehub"
 	"github.com/maleolabs/walkie/internal/obs"
 )
@@ -243,6 +244,68 @@ func TestMessagesCounterCountsIngressNotFanout(t *testing.T) {
 	// ...but still ONE ingressed message each, so two total.
 	if got := metricValue(t, m, "walkie_messages_total", nil); got != 2 {
 		t.Fatalf("messages after one direct + one broadcast fanned to two devices = %v, want 2 (ingress-counted)", got)
+	}
+}
+
+// Criterion 2, hold half: a direct message for a KNOWN but OFFLINE device is
+// accepted at ingress exactly like a live-routed one — validated, stamped,
+// taken into retention — so walkie_messages_total must move even though no
+// socket received a copy. Pinned because the counter originally incremented
+// only in the live-route branch, making offline traffic invisible to the
+// messages/second rate while a broadcast into an empty room still counted.
+// The refusal backstop also pins the chosen semantics: refused is not
+// accepted, so DEVICE_UNKNOWN leaves the counter alone.
+func TestMessagesCounterCountsHeldOfflineMessages(t *testing.T) {
+	sink := newRecordingSink()
+	rig := startPresenceRig(t, sink)
+	m := obs.NewMetrics()
+	rig.srv.WireMetrics(m) // before any client connects: no mid-flight wiring
+
+	// connectAll drains the connect-time ONLINE chatter, so the OFFLINE event
+	// read below is unambiguous.
+	clients := connectAll(t, rig, laptopName, phoneName)
+	laptop, phone := clients[0], clients[1]
+
+	// Phone disconnects; laptop OBSERVING the OFFLINE event proves the route
+	// is gone before anything is sent (removeRoute precedes ConnectionLost
+	// in the teardown chain) — so the message below can only take the hold
+	// path, never the live-route one.
+	phone.teardown(t)
+	if got := laptop.nextPresence(t); got.GetDevice() != phoneName ||
+		got.GetState() != walkiev1.PresenceState_PRESENCE_STATE_OFFLINE {
+		t.Fatalf("setup: laptop saw %+v, want phone OFFLINE", got)
+	}
+
+	if got := metricValue(t, m, "walkie_messages_total", nil); got != 0 {
+		t.Fatalf("messages before the hold = %v, want 0", got)
+	}
+
+	env, err := messagehub.New(laptopName, rig.clk, nil).SendDirect(phoneName, "hold me")
+	if err != nil {
+		t.Fatalf("compose dm: %v", err)
+	}
+	laptop.send(t, env)
+
+	// The sink receiving the envelope is the causal proof that the full
+	// accept path ran; the counter is read only after that point.
+	select {
+	case <-sink.recipients:
+	case <-time.After(5 * time.Second):
+		t.Fatal("offline delivery never reached the sink")
+	}
+	if got := metricValue(t, m, "walkie_messages_total", nil); got != 1 {
+		t.Fatalf("messages after one held direct = %v, want 1 (held counts as accepted)", got)
+	}
+
+	// Refusal backstop: an UNKNOWN recipient is refused, not accepted — the
+	// DEVICE_UNKNOWN frame arriving proves the refusal path ran, and the
+	// counter must have stayed at 1 through it.
+	laptop.send(t, directEnvelope(message.NewID(rig.clk.Now()), "ghost.tail-scale.ts.net.", "?", rigEpoch))
+	if got := laptop.nextEnvelope(t); got.GetProtocolError() == nil {
+		t.Fatalf("unknown recipient got %T, want ProtocolError", got.GetPayload())
+	}
+	if got := metricValue(t, m, "walkie_messages_total", nil); got != 1 {
+		t.Fatalf("messages after a refused direct = %v, want unchanged 1 (refused is not accepted)", got)
 	}
 }
 
