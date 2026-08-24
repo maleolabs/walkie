@@ -125,6 +125,13 @@ func Keymap() [][2]string {
 	return out
 }
 
+// HelpText renders the full help body — the command table plus the
+// guarded-input rule — for consumers outside this package. Exported alongside
+// Keymap for ts:docs-quickstart-runbook's `walkie help`: a second renderer in
+// cmd/walkie would be exactly the drift the single-source rule forbids, so the
+// CLI prints what the overlay prints.
+func HelpText() string { return helpText() }
+
 // helpText renders the single-source table. Plain text, no colour and no
 // box-drawing: the help must survive TERM=dumb and an 80-column terminal
 // (criteria 4 and 5), and a fixed-width two-column layout under 80 columns is

@@ -6,9 +6,24 @@ to install a graphical environment.
 
 ## Status
 
-**Not implemented.** The architecture is decided and approved; the code is not
-written. The repository currently holds the module scaffold and the committed
-engineering knowledge.
+**The MVP's text-and-presence core is implemented.** One WebSocket per
+client to a tsnet coordinator, server-authoritative presence with a liveness
+TTL, at-least-once delivery deduplicated by ULID, bounded offline queues
+sealed to recipient keys, scriptable local history, reconnect/resume, a
+local control socket for scripts, metrics and health endpoints, and a
+checksummed cross-compile release pipeline. Thirteen of `ctr:wave-1`'s
+sixteen items are done.
+
+**Not yet:** voice notes (`sto:voice-note` is still todo and the audio
+spike was canceled) — no build records or plays voice notes today — plus
+everything deferred to later phases: real-time calls, the direct data
+plane, relay fallback, file transfer, rooms, PTY streaming, slash commands,
+webhooks, plugins, auto-update. `docs/runbook.md` lists them so nobody
+debugs a phantom.
+
+User documentation lives in [docs/quickstart.md](docs/quickstart.md)
+(three commands to a working session) and [docs/runbook.md](docs/runbook.md)
+(deploying and operating the coordinator).
 
 The design does not live in these files. It lives in the EKA knowledge base:
 
@@ -20,9 +35,9 @@ eka view execution                                                    # the work
 eka get containers                                                    # container membership
 ```
 
-Sixteen work items are planned and ticketed under `walkie/ctr:wave-1`. Read
-`CLAUDE.md` before writing code — it carries the invariants that constrain every
-package, and the constraints that produce wrong code if you do not know them.
+Read `CLAUDE.md` before writing code — it carries the invariants that
+constrain every package, and the constraints that produce wrong code if you
+do not know them.
 
 ## Two build variants
 
@@ -32,7 +47,7 @@ ARM devices in the fleet — with no C toolchain. Audio needs CGO, so it lives
 behind the `voice` build tag.
 
 ```sh
-make build         # default: text, presence, files. Pure Go, static.
+make build         # default: pure Go, static; text and presence work fully.
 make build-voice   # adds audio capture and playback.
 make check-cgo     # the guard: the default tree must build with CGO_ENABLED=0
 ```
@@ -111,9 +126,8 @@ walkie history -conversation broadcast -db /path/to/history.db
 ```
 
 See `walkie history -help` for the full flag list; the same security statement
-ships in that help output. When the quickstart and runbook land
-(`ts:docs-quickstart-runbook`), they must carry this unencrypted-at-rest
-statement forward so users keep being told after this README is rewritten.
+ships in that help output, in `walkie help`, and in
+[docs/quickstart.md](docs/quickstart.md).
 
 ## Queued messages are encrypted
 
@@ -157,10 +171,10 @@ until that first announce pins the key; pins never apply retroactively, and
 every such hold is logged. The key-loss and no-rotation statements above
 describe exactly this end state.
 
-When the quickstart and runbook land (`ts:docs-quickstart-runbook`), they must
-carry the key-loss statement, the no-rotation statement and the fingerprint
-verification procedure forward so users keep being told after this README is
-rewritten.
+The key-loss statement, the no-rotation statement and the fingerprint
+verification procedure are carried in [docs/quickstart.md](docs/quickstart.md)
+and [docs/runbook.md](docs/runbook.md), so users keep being told outside
+this README too.
 
 ## Remote shell access
 
@@ -171,7 +185,10 @@ reviewed remote-execution path would be a net security regression.
 
 ## User documentation
 
-The quickstart and the operations runbook are not written yet. They are
-`ts:docs-quickstart-runbook`, and its acceptance criteria are worth reading
-before starting: the quickstart must get a non-technical reader to a working
-session in three commands, verified with a real person rather than assumed.
+- [docs/quickstart.md](docs/quickstart.md) — for a non-technical reader:
+  three commands to a working session, the security facts stated plainly,
+  and the fingerprint verification procedure.
+- [docs/runbook.md](docs/runbook.md) — deploying and operating the
+  coordinator: container flags, tailnet ACL expectations, retention
+  configuration, metric interpretation (including why direct-path counts
+  read zero by design in this release), and restart recovery.

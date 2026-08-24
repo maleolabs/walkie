@@ -56,6 +56,9 @@
 //     (sto:message-history criterion 2): by conversation, by time range, one
 //     JSON object per line. See its -help for the security statement that
 //     ships with it.
+//   - `walkie help` — the whole command surface, derived from the structures
+//     that implement it so it cannot drift (ts:docs-quickstart-runbook
+//     criterion 2).
 //   - `walkie -version` — which build variant this is, which matters because a
 //     fleet running two variants needs a way to tell them apart on the device
 //     (adr:002-runtime-stack).
@@ -98,40 +101,65 @@ const defaultCoordinatorURL = "ws://walkie-coordinator:443"
 func main() {
 	// Subcommand dispatch happens before global flag parsing: flag.Parse stops
 	// at the first non-flag argument, so "walkie history ..." would otherwise
-	// fall through to the interactive client below.
-	if len(os.Args) > 1 && os.Args[1] == "history" {
-		os.Exit(runHistory(os.Args[2:], os.Stdout, os.Stderr))
+	// fall through to the interactive client below. dispatchSubcommand's
+	// runner table and help.go's subcommandSummaries are pinned together by
+	// help_test.go — a subcommand may exist in one place only if it exists in
+	// both.
+	if len(os.Args) > 1 {
+		if code, handled := dispatchSubcommand(os.Args[1], os.Args[2:], os.Stdout, os.Stderr); handled {
+			os.Exit(code)
+		}
 	}
 
-	showVersion := flag.Bool("version", false, "print version and build variant, then exit")
-	coordinator := flag.String("coordinator", defaultCoordinatorURL, "control-plane WebSocket URL of the coordinator")
-	dbPath := flag.String("db", defaultDBPath(), "path to the history database")
-	identityPath := flag.String("identity", defaultIdentityPath(), "path to this device's X25519 identity key")
-	socketPath := flag.String("socket", defaultSocketPath(), "local control socket path (empty disables the control socket)")
+	cf := registerClientFlags(flag.CommandLine)
 	flag.Parse()
 
-	if *showVersion {
+	if *cf.version {
 		printVersion(os.Stdout)
 		return
 	}
-	if *dbPath == "" {
+	if *cf.db == "" {
 		fmt.Fprintln(os.Stderr, "walkie: cannot resolve a home directory for the history database; pass -db")
 		os.Exit(1)
 	}
-	if *identityPath == "" {
+	if *cf.identity == "" {
 		fmt.Fprintln(os.Stderr, "walkie: cannot resolve a home directory for the identity key; pass -identity")
 		os.Exit(1)
 	}
 
 	logger := obs.NewLogger(os.Stderr, obs.ParseLevel(os.Getenv("WALKIE_LOG_LEVEL")))
 	if err := runClient(logger, clientConfig{
-		coordinatorURL: *coordinator,
-		dbPath:         *dbPath,
-		identityPath:   *identityPath,
-		socketPath:     *socketPath,
+		coordinatorURL: *cf.coordinator,
+		dbPath:         *cf.db,
+		identityPath:   *cf.identity,
+		socketPath:     *cf.socket,
 	}); err != nil {
 		logger.Error("walkie: fatal", slog.String("reason", err.Error()))
 		os.Exit(1)
+	}
+}
+
+// clientFlags holds the parsed client flag values. It exists so main() and
+// runHelp register the IDENTICAL flag set from one function: help enumerates
+// what main parses, so the two cannot drift.
+type clientFlags struct {
+	version     *bool
+	coordinator *string
+	db          *string
+	identity    *string
+	socket      *string
+}
+
+// registerClientFlags registers the client's flags on fs. Every flag has a
+// sane default; none is required; there is no configuration file (see the
+// package comment for why the surface stays this small).
+func registerClientFlags(fs *flag.FlagSet) clientFlags {
+	return clientFlags{
+		version:     fs.Bool("version", false, "print version and build variant, then exit"),
+		coordinator: fs.String("coordinator", defaultCoordinatorURL, "control-plane WebSocket URL of the coordinator"),
+		db:          fs.String("db", defaultDBPath(), "path to the history database"),
+		identity:    fs.String("identity", defaultIdentityPath(), "path to this device's X25519 identity key"),
+		socket:      fs.String("socket", defaultSocketPath(), "local control socket path (empty disables the control socket)"),
 	}
 }
 
