@@ -414,6 +414,58 @@ func TestHelpOverlayListsEveryBindingFromTheSingleSource(t *testing.T) {
 	}
 }
 
+// While help is open the model behind it must be inert: a tab or digit
+// pressed under the overlay used to switch conversations and silently clear
+// unread markers the overlay was covering.
+func TestHelpOverlayBlocksDispatchToTheModelBehindIt(t *testing.T) {
+	h := newHarness(t)
+	h.presence.Apply(presenceOnline("alice", ""))
+	h.presence.Apply(presenceOnline("bob", ""))
+	h.update(t, PresenceMsg{Device: presenceview.Device{Device: "alice"}})
+
+	// A message from bob lands while broadcast is selected: one unread
+	// marker on dm:bob, which the overlay must not let keys erase.
+	env := directEnvelope("bob", "laptop", "while you were away", testEpoch, testEpoch)
+	msg, shown := h.hub.Apply(env)
+	if !shown {
+		t.Fatal("first delivery must be new")
+	}
+	h.update(t, InboundMsg{Msg: msg})
+
+	bobConv := message.ConversationKey("bob")
+	if got := h.model.conversationKey(); got != message.BroadcastConversation {
+		t.Fatalf("start on broadcast, got %q", got)
+	}
+
+	h.update(t, key("?")) // open help
+	if !h.model.helpOpen {
+		t.Fatal("help must be open")
+	}
+
+	h.update(t, tabKey())
+	h.update(t, key("3")) // points straight at bob's marked conversation
+	if got := h.model.conversationKey(); got != message.BroadcastConversation {
+		t.Errorf("keys under the overlay switched to %q", got)
+	}
+	if len(h.model.unread) != 1 || h.model.unread[bobConv] != 1 {
+		t.Errorf("unread markers must survive keys under the overlay, got %v", h.model.unread)
+	}
+
+	h.update(t, escKey()) // close help
+	if h.model.helpOpen {
+		t.Fatal("esc must close help")
+	}
+
+	h.update(t, tabKey())
+	if got := h.model.conversationKey(); got == message.BroadcastConversation {
+		t.Error("normal dispatch must resume once help closes")
+	}
+	h.update(t, key("3"))
+	if got := h.model.conversationKey(); got != bobConv {
+		t.Errorf("after close, '3' landed on %q, want %q", got, bobConv)
+	}
+}
+
 func TestVoiceCapabilityStatedAsPresentOrAbsentNeverError(t *testing.T) {
 	h := newHarness(t)
 	h.update(t, key("?"))

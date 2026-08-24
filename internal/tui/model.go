@@ -258,6 +258,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// While the help overlay is open the model behind it must be inert:
+	// dispatching a tab or digit here would switch conversations and
+	// silently clear unread markers the overlay is covering. Only help
+	// control (toggle/close) and quit still act.
+	if m.helpOpen {
+		switch b.action {
+		case actHelp, actCloseHelp, actQuit:
+		default:
+			return m, nil
+		}
+	}
+
 	switch b.action {
 	case actSend:
 		body := strings.TrimSpace(m.input.Value())
