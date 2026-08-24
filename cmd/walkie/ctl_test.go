@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -127,7 +128,7 @@ func TestFiledMessageReachesSubscribersWithoutContent(t *testing.T) {
 	presence := presenceview.New(nil)
 
 	path := filepath.Join(t.TempDir(), "walkie.sock")
-	srv, err := startControlSocket(path, ctlDeps{
+	srv, l, err := startControlSocket(path, ctlDeps{
 		app:      fx.app,
 		client:   fx.client,
 		mach:     mach,
@@ -137,6 +138,7 @@ func TestFiledMessageReachesSubscribersWithoutContent(t *testing.T) {
 		t.Fatalf("startControlSocket: %v", err)
 	}
 	defer srv.Close()
+	defer func() { _ = l.Close() }()
 
 	tc := dialLoopback(t, path)
 	tc.writeLine(t, `{"cmd":"subscribe"}`)
@@ -164,6 +166,48 @@ func TestFiledMessageReachesSubscribersWithoutContent(t *testing.T) {
 	}
 	if _, has := ev["body"]; has {
 		t.Errorf("message event carries a body field: %v", ev)
+	}
+}
+
+// Wiring-level proof for criterion 1: a CLEAN exit must leave no socket file
+// behind. Go's UnixListener unlinks its path only on Close, so the assembly
+// has to own the listener — this fails if startControlSocket ever stops
+// handing it back or runClient stops closing it.
+func TestCleanCloseCycleRemovesSocketFile(t *testing.T) {
+	fx := newFixture(t)
+	fx.client.identity = "self"
+
+	mach, err := control.NewMachine(clock.NewFake(testEpoch), nil)
+	if err != nil {
+		t.Fatalf("machine: %v", err)
+	}
+	defer mach.Close()
+	presence := presenceview.New(nil)
+
+	path := filepath.Join(t.TempDir(), "walkie.sock")
+	srv, l, err := startControlSocket(path, ctlDeps{
+		app:      fx.app,
+		client:   fx.client,
+		mach:     mach,
+		presence: presence,
+	}, nil)
+	if err != nil {
+		t.Fatalf("startControlSocket: %v", err)
+	}
+
+	// Exercise one full serve cycle first — the assertion must prove the file
+	// is REMOVED by the close, not merely that it was never created.
+	tc := dialLoopback(t, path)
+	tc.writeLine(t, `{"cmd":"subscribe"}`)
+	drainSnapshotLines(t, tc)
+
+	srv.Close()
+	if err := l.Close(); err != nil {
+		t.Fatalf("listener close: %v", err)
+	}
+
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("socket file still present after clean close (stat = %v); a clean exit must not leave it behind", err)
 	}
 }
 

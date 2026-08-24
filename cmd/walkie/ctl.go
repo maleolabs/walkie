@@ -29,6 +29,7 @@ package main
 import (
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -70,9 +71,12 @@ type ctlDeps struct {
 }
 
 // startControlSocket listens, wires the handlers, starts the accept loop and
-// the two event-feed pumps. It returns the running server (Close it on
-// shutdown) or an error the caller degrades on.
-func startControlSocket(path string, deps ctlDeps, logger *slog.Logger) (*ctlsocket.Server, error) {
+// the two event-feed pumps. It returns the running server AND its listener:
+// both halves close on shutdown, because Server.Close drops connections and
+// subscriptions but Go unlinks the socket FILE only when the listener closes
+// — skipping that half leaves a dead control.sock behind, which reads to the
+// next run as a crashed predecessor instead of a clean exit.
+func startControlSocket(path string, deps ctlDeps, logger *slog.Logger) (*ctlsocket.Server, net.Listener, error) {
 	srv, err := ctlsocket.New(ctlsocket.Handlers{
 		Send: func(to, body string) error {
 			// Empty "to" broadcasts; anything else names a peer. Same
@@ -89,12 +93,12 @@ func startControlSocket(path string, deps ctlDeps, logger *slog.Logger) (*ctlsoc
 		ConnState: func() string { return deps.mach.State().String() },
 	}, ctlsocket.Config{}, logger)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	l, err := ctlsocket.Listen(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	go func() { _ = srv.Serve(l) }()
 
@@ -104,7 +108,7 @@ func startControlSocket(path string, deps ctlDeps, logger *slog.Logger) (*ctlsoc
 	go pumpConnEvents(srv, deps.mach.Subscribe())
 	go pumpPresenceEvents(srv, deps.presence.Subscribe())
 
-	return srv, nil
+	return srv, l, nil
 }
 
 // sendStatus validates and transmits a custom status change. An empty status

@@ -219,7 +219,7 @@ func runClient(logger *slog.Logger, cfg clientConfig) error {
 	// and another walkie already holding the path (ErrInUse; that instance
 	// owns the surface). Text and presence never depended on it.
 	if cfg.socketPath != "" {
-		srv, err := startControlSocket(cfg.socketPath, ctlDeps{
+		srv, l, err := startControlSocket(cfg.socketPath, ctlDeps{
 			app:      a,
 			client:   client,
 			mach:     mach,
@@ -231,7 +231,11 @@ func runClient(logger *slog.Logger, cfg clientConfig) error {
 				slog.String("reason", err.Error()),
 			)
 		} else {
-			defer srv.Close()
+			// Both halves close, server first: Close drops the connections
+			// and subscriptions, then the listener's Close unlinks the socket
+			// file (Go only unlinks on listener close) and ends the accept
+			// loop Serve would otherwise block in forever.
+			defer func() { srv.Close(); _ = l.Close() }()
 			// Message events carry metadata only — no body ever crosses the
 			// control socket (ctlsocket package comment explains the line).
 			a.SetOnFiled(func(msg message.Message) {

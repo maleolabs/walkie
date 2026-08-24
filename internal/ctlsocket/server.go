@@ -145,6 +145,12 @@ func (s *Server) Serve(l net.Listener) error {
 			if closed || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
+			// Failure-class log, not silence: assembly runs Serve in a
+			// fire-and-forget goroutine and discards this return, so here is the
+			// only place an accept failure would otherwise vanish. The error is
+			// between us and the OS — it names no request or event content.
+			s.logger.Warn("ctlsocket: accept failed; control surface stops accepting",
+				slog.String("error", err.Error()))
 			return fmt.Errorf("ctlsocket: accept: %w", err)
 		}
 
@@ -404,8 +410,11 @@ func (sc *serverConn) subscribe(id json.RawMessage) []byte {
 	// a gap event pointing at a snapshot the reader never got would be
 	// absurd. It is written HERE, synchronously, before the pump exists and
 	// before the response line: a script's first read after subscribing is
-	// then always the snapshot, which makes the resync story deterministic
-	// ("subscribe, read one line, you are current") instead of racy.
+	// then the current state. One nuance a reader of this code should not
+	// mistake for a race: an event published between registration and this
+	// enqueue can precede the snapshot in the queue, so that live event may
+	// be read first and then duplicated by the snapshot — duplicate-not-miss,
+	// exactly what the registration-first rule above buys.
 	snap := eventLine("snapshot", map[string]any{
 		"conn":     map[string]any{"state": sc.srv.handlers.ConnState()},
 		"presence": rosterOrEmpty(sc.srv.handlers.Presence()),
@@ -558,7 +567,12 @@ func (sc *serverConn) pump(sub *subscriber) {
 			if err := sc.writeLine(line); err != nil {
 				// Slow-to-the-kernel subscriber (SIGSTOP'd process, vanished
 				// peer): the deadline turned the stall into an error. Tear
-				// down; the read loop's shutdown path unsubscribes us.
+				// down; the read loop's shutdown path unsubscribes us. Logged
+				// as a failure class only — the event line itself never
+				// reaches the journal, it belongs to the script on the far
+				// side, not to the log.
+				sc.srv.logger.Warn("ctlsocket: subscriber write failed past deadline; disconnecting",
+					slog.String("error", err.Error()))
 				sc.shutdown()
 				return
 			}
