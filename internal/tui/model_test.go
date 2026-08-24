@@ -190,6 +190,44 @@ func TestIdentityAppearsOnlyOnceOnline(t *testing.T) {
 	}
 }
 
+// Regression for a post-merge panic (fix/tui-nil-hub-panic): Bubbletea calls
+// View() on Program.Run, BEFORE the handshake completes, so the assembly's
+// HubFunc still returns nil at the first frame (the hub is built lazily from
+// the HelloAck echo — see ConversationSource). messageLines used to call
+// Conversation on that nil interface result and panicked with a nil pointer
+// dereference on the very first frame; this test constructs exactly that
+// pre-hub state and fails on the old code because View() panicked instead of
+// returning.
+func TestViewRendersCoherentlyBeforeHandshakeBuildsTheHub(t *testing.T) {
+	h := newHarness(t)
+	// Rewire the model the way runClient has it before any callback fires:
+	// no hub yet (the seam reports nil), identity not echoed yet, machine
+	// still connecting. Every other seam is real, as in the assembly.
+	h.model = New(Params{
+		HubFunc:         func() ConversationSource { return nil },
+		Presence:        h.presence,
+		ConnChanges:     h.connCh,
+		PresenceChanges: h.presCh,
+		Inbound:         h.inCh,
+		ConnectedAs:     func() string { return h.identity }, // still ""
+		Send:            func(string, string) error { return nil },
+		AudioAvailable:  false,
+		ConnState:       control.StateConnecting,
+	})
+
+	view := h.model.View() // old code panicked here
+	first := strings.SplitN(view, "\n", 2)[0]
+	if !strings.Contains(first, "[connecting]") {
+		t.Errorf("pre-handshake render must show the connecting status line:\n%s", view)
+	}
+	if !strings.Contains(view, "(no messages yet") {
+		t.Errorf("pane must degrade to its empty placeholder while the hub is absent:\n%s", view)
+	}
+	if !strings.Contains(view, "type a message") {
+		t.Errorf("composer must be present before the hub exists:\n%s", view)
+	}
+}
+
 // -- message pane updates + both timestamps + unstamped sends ---------------
 
 func TestMessagePaneShowsBothTimestampsAndSkew(t *testing.T) {
