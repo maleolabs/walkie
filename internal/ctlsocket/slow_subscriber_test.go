@@ -73,13 +73,15 @@ func TestNeverReadSubscriberDoesNotBlockOrLeak(t *testing.T) {
 	tc.writeLine(t, `{"cmd":"subscribe"}`)
 	drainSnapshot(t, tc)
 
-	// Flood far past both the queue bound and the kernel socket buffer, with
-	// the reader attached but silent. If any publish blocked, this loop would
-	// hang and the fail-safe below would never even matter — completion
-	// itself is the no-block assertion. Enough volume that the pump MUST
-	// wedge against the unread buffer and start dropping.
+	// Flood past both the queue bound and the kernel socket buffer (~200 KB),
+	// with the reader attached but silent. If any publish blocked, this loop
+	// would hang and the fail-safe below would never even matter —
+	// completion itself is the no-block assertion. The size is chosen to
+	// saturate the socket buffer FAST (well inside the default 10s write
+	// deadline): this test exercises the queue-bound regime, not the
+	// deadline regime that TestStalledWriter covers.
 	done := make(chan struct{})
-	const total = 40000
+	const total = 6000
 	go func() {
 		defer close(done)
 		for i := 0; i < total; i++ {
