@@ -187,7 +187,16 @@ func (m Model) messageLines(n int) []string {
 	if n <= 0 || src == nil {
 		return []string{"(no messages yet - type below, tab switches conversation)"}
 	}
-	msgs := src().Conversation(m.conversationKey())
+	// The seam is non-nil from assembly time, but RETURNS nil until the first
+	// handshake completes (the hub's local name is the HelloAck echo, so the
+	// assembly builds it lazily — see ConversationSource). Bubbletea renders
+	// View() on Program.Run, before any of that, so the nil RESULT must be
+	// guarded exactly like refreshConversations does; calling Conversation on
+	// it panicked on the very first frame.
+	var msgs []message.Message
+	if hub := src(); hub != nil {
+		msgs = hub.Conversation(m.conversationKey())
+	}
 	if len(msgs) == 0 {
 		return []string{"(no messages yet - type below, tab switches conversation)"}
 	}
