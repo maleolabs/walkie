@@ -9,6 +9,7 @@ import (
 
 	"github.com/maleolabs/walkie/internal/clock"
 	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
+	"github.com/maleolabs/walkie/internal/obs"
 	"github.com/maleolabs/walkie/internal/store"
 	"google.golang.org/protobuf/proto"
 )
@@ -73,6 +74,17 @@ type Queue struct {
 	// non-blocking: nobody listening loses nothing.
 	swept chan struct{}
 
+	// parked is a TEST-ONLY seam: watch() signals it just before parking on
+	// each iteration's timer snapshot, so a test can hold the watcher at a
+	// KNOWN snapshot state — the nil-timer park being the one that matters —
+	// and then drive enqueue → clock advance in a fully ordered sequence.
+	// That is what makes rearmLocked's stale-snapshot race deterministic:
+	// without the seam, whether the watcher has re-snapshotted when the test
+	// advances the clock is pure scheduling luck, exactly what
+	// ts:test-harness forbids a test to depend on. Buffered, sent
+	// non-blocking: production has no listener and loses nothing.
+	parked chan struct{}
+
 	// atRest is ts:queue-sealed-box's encryption seam (see sealed.go): what
 	// a body looks like while it rests in storage. Nil — the plain [New]
 	// shape — stores and reads bytes verbatim; NewSealed wires the sealed
@@ -81,6 +93,20 @@ type Queue struct {
 	// sealForStorage in Enqueue and deliveryFromStorage in Resume, and
 	// nowhere else.
 	atRest AtRest
+
+	// metrics is ts:observability-baseline's hook point (internal/obs). Nil
+	// disables emission — every pre-observability test's shape. Wired via
+	// WireMetrics before use, mirroring coordinator.Server.WireKeys; the
+	// obs.Metrics methods tolerate nil receivers regardless.
+	metrics *obs.Metrics
+}
+
+// WireMetrics attaches the observability surface. Call once, before the
+// queue serves traffic: attaching mid-flight would make eviction counts and
+// depth observations depend on when each mutation happened relative to the
+// wiring, which no reader can reason about.
+func (q *Queue) WireMetrics(m *obs.Metrics) {
+	q.metrics = m
 }
 
 // CapacityError is the typed refusal returned by [Queue.Enqueue] when the
@@ -160,6 +186,7 @@ func newQueue(st *store.Store, clk clock.Clock, ttl time.Duration, maxSize int, 
 		closed:  make(chan struct{}),
 		wake:    make(chan struct{}, 1),
 		swept:   make(chan struct{}, 1),
+		parked:  make(chan struct{}, 1),
 	}
 
 	// Startup sweep: whatever lapsed while the process was down is evicted
@@ -256,6 +283,11 @@ func (q *Queue) Enqueue(recipient string, env *walkiev1.Envelope) (uint64, error
 		return 0, fmt.Errorf("queue: enqueue for %q: count: %w", recipient, err)
 	}
 	if retained >= q.maxSize {
+		// ts:observability-baseline: the refusal counts under reason
+		// "size_cap". The help string is explicit that this reason counts
+		// REFUSED ADMISSIONS, not removals — nothing retained was deleted
+		// here, and conflating the two would lie about retention behaviour.
+		q.metrics.IncQueueEviction("size_cap")
 		return 0, &CapacityError{Recipient: recipient, Cap: q.maxSize}
 	}
 
@@ -287,6 +319,12 @@ func (q *Queue) Enqueue(recipient string, env *walkiev1.Envelope) (uint64, error
 	// The new entry may carry the earliest deadline; re-arm regardless —
 	// Reset is cheap and correct whether the deadline moved or not.
 	q.rearmLocked()
+
+	// Depth observation (ts:observability-baseline): retained+1 is exact
+	// here — the count was read under this same mutex with no insert between
+	// count and insert. Feeds the unlabelled cross-recipient histogram; see
+	// obs.Metrics for why per-recipient series are forbidden.
+	q.metrics.ObserveQueueDepth(retained + 1)
 
 	return position, nil
 }
@@ -419,6 +457,11 @@ func (q *Queue) Ack(recipient string, position uint64) error {
 		return fmt.Errorf("queue: ack for %q: commit: %w", recipient, err)
 	}
 
+	// Depth observation (ts:observability-baseline): the deletion moved this
+	// recipient's backlog, so the distribution re-reads it. One COUNT per
+	// ack is noise at fleet scale (under 20 devices, human messaging rates).
+	q.observeDepth(recipient)
+
 	// Deletion cannot move the earliest deadline earlier, so no re-arm is
 	// needed here — rearmLocked exists for enqueues, which can.
 	return nil
@@ -464,6 +507,15 @@ func (q *Queue) watch() {
 		var timerC <-chan time.Time
 		if tm != nil {
 			timerC = tm.C()
+		}
+
+		// Park announcement (the parked field's comment has the why): sent
+		// AFTER the snapshot is taken and BEFORE the select, so a receiver
+		// knows the watcher is committed to exactly this iteration's timer
+		// state.
+		select {
+		case q.parked <- struct{}{}:
+		default:
 		}
 
 		select {
@@ -549,12 +601,26 @@ func (q *Queue) sweep() error {
 		); err != nil {
 			return fmt.Errorf("evict %q position %d: %w", e.recipient, e.position, err)
 		}
+		// Bounded retention working as designed, now also visible as a
+		// metric (ts:observability-baseline criterion 2): reason "ttl",
+		// distinct from the size cap's refusals.
+		q.metrics.IncQueueEviction("ttl")
 		q.logger.Info("queued message expired",
 			slog.String("recipient", e.recipient),
 			slog.Int64("position", e.position),
 			slog.String("message_id", e.messageID),
 			slog.Duration("age", now.Sub(e.enqueued)),
 		)
+	}
+
+	// Re-observe the distribution for every recipient the sweep touched, so
+	// the histogram tracks the post-eviction backlog rather than a stale one.
+	evicted := make(map[string]struct{}, len(due))
+	for _, e := range due {
+		evicted[e.recipient] = struct{}{}
+	}
+	for recipient := range evicted {
+		q.observeDepth(recipient)
 	}
 
 	q.mu.Lock()
@@ -572,6 +638,22 @@ func (q *Queue) sweep() error {
 	}
 	q.mu.Unlock()
 	return nil
+}
+
+// observeDepth reads one recipient's live backlog and feeds it into the
+// cross-recipient depth histogram. Used where the new depth is not already
+// known in-hand (Ack deletions, TTL sweeps); Enqueue observes its known
+// count directly. A read error is swallowed into a skipped observation: the
+// histogram is an operator instrument, and one missed sample must never turn
+// a queue mutation into a failure.
+func (q *Queue) observeDepth(recipient string) {
+	var n int
+	if err := q.db.QueryRow(
+		`SELECT COUNT(*) FROM queue_inbox WHERE recipient = ?`, recipient,
+	).Scan(&n); err != nil {
+		return
+	}
+	q.metrics.ObserveQueueDepth(n)
 }
 
 // Swept returns a channel receiving one signal per completed TTL sweep. It
@@ -617,6 +699,13 @@ func (q *Queue) rearmLocked() {
 	}
 	if q.timer == nil {
 		q.timer = q.clk.NewTimer(delay)
+		// Nudge even though the timer is new: a watcher parked on the
+		// PREVIOUS iteration's snapshot (timer nil → timerC nil) must loop
+		// to pick up the new channel, or its fire lands in a channel nobody
+		// reads and expiry stalls until the next unrelated mutation. Found
+		// by ts:observability-baseline's log-audit rig; without it, TTL
+		// removal silently depends on goroutine scheduling.
+		q.nudge()
 		return
 	}
 	q.timer.Reset(delay)

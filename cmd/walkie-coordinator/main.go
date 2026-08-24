@@ -27,10 +27,12 @@
 //	WALKIE_STORE_PATH       SQLite database path
 //	                        (default "<WALKIE_STATE_DIR>/coordinator.db")
 //	WALKIE_CONTROL_PORT     control-plane port (default "443")
+//	WALKIE_OBS_PORT         metrics/health port (default "9464")
 //	WALKIE_PRESENCE_TTL     liveness TTL for presence (default "45s")
 //	WALKIE_QUEUE_TTL        offline-queue retention per message (default "72h")
 //	WALKIE_QUEUE_MAX_SIZE   offline-queue cap, messages per recipient
 //	                        (default "256")
+//	WALKIE_LOG_LEVEL        debug|info|warn|error (default "info")
 //
 // The auth key arrives via environment rather than flag deliberately: argv is
 // world-readable through ps and shell history, and this process has no other
@@ -49,6 +51,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -60,6 +63,7 @@ import (
 	"github.com/maleolabs/walkie/internal/coordinator/queue"
 	"github.com/maleolabs/walkie/internal/coordinator/tsauth"
 	"github.com/maleolabs/walkie/internal/crypto"
+	"github.com/maleolabs/walkie/internal/obs"
 	"github.com/maleolabs/walkie/internal/store"
 )
 
@@ -89,7 +93,7 @@ func main() {
 		return
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logger := obs.NewLogger(os.Stderr, obs.ParseLevel(os.Getenv("WALKIE_LOG_LEVEL")))
 	if err := run(logger); err != nil {
 		logger.Error("walkie-coordinator: fatal", slog.String("reason", err.Error()))
 		os.Exit(1)
@@ -101,7 +105,8 @@ func main() {
 // Startup order matters and is not interchangeable: the store opens BEFORE
 // the tailnet join, so a misconfigured database fails fast and locally
 // instead of after a network round trip; the listener comes from tsnet
-// itself, which is what makes the tailnet-only bind (criterion 3) structural
+// itself, which is what makes the tailnet-only bind (ts:coordinator-skeleton
+// criterion 3) structural
 // rather than a matter of getting an address string right.
 func run(logger *slog.Logger) error {
 	cfg, err := loadConfig()
@@ -109,7 +114,8 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	// Criterion 5: first start creates and migrates the schema with no
+	// ts:coordinator-skeleton criterion 5: first start creates and migrates
+	// the schema with no
 	// manual step; later starts apply only new migrations. All timestamps
 	// the store writes come from the injected clock.
 	st, err := store.Open(cfg.storePath, clock.Real())
@@ -161,7 +167,24 @@ func run(logger *slog.Logger) error {
 	}
 	defer inbox.Close()
 
-	// Criterion 1, production path: this process IS a tailnet node. tsnet
+	// Observability (ts:observability-baseline): one metric set wired into
+	// the queue and the server, one health handler whose two probes answer
+	// criterion 4's two questions separately — coordinator readiness is a
+	// flag this function flips once BOTH listeners are bound, store
+	// readiness is a live ping so a wedged database shows up as
+	// store:"unavailable" while the process keeps serving.
+	metrics := obs.NewMetrics()
+	inbox.WireMetrics(metrics)
+
+	var coordReady atomic.Bool
+	health := &obs.Health{
+		CoordinatorReady: coordReady.Load,
+		StoreReady:       st.DB().Ping,
+	}
+	obsHandler := obs.NewHandler(metrics, health)
+
+	// ts:coordinator-skeleton criterion 1, production path: this process IS a
+	// tailnet node. tsnet
 	// brings its own WireGuard, DERP fallback and node identity inside the
 	// container — no host networking, no Tailscale sidecar (adr:001). The
 	// auth key is passed to tsnet directly and is never logged.
@@ -177,7 +200,8 @@ func run(logger *slog.Logger) error {
 		slog.String("state_dir", cfg.stateDir),
 	)
 
-	// Criterion 2, production path: WhoIs-backed resolution against this
+	// ts:coordinator-skeleton criterion 2, production path: WhoIs-backed
+	// resolution against this
 	// node's local daemon. Constructing the resolver starts the join, so a
 	// bad auth key or unreachable coordination server surfaces HERE, with
 	// the knobs that fix it named in the wrapper below.
@@ -186,23 +210,56 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("join tailnet (check WALKIE_TAILNET_AUTHKEY and WALKIE_STATE_DIR): %w", err)
 	}
 
-	// Criterion 3, production path: tsnet's listener binds ONLY the node's
+	// ts:coordinator-skeleton criterion 3, production path: tsnet's listener
+	// binds ONLY the node's
 	// tailnet IP — there is no code path here that could bind a wildcard,
 	// because no address string is ever parsed or constructed locally. The
 	// property is proven by test in internal/coordinator (server_test.go);
 	// this wiring is where the tested shape meets production.
+	// Shutdown: SIGINT/SIGTERM cancel ctx, which stops both planes — the
+	// accept loop and the observability server — and winds live connections
+	// down inside the server's grace window. SIGTERM matters as much as
+	// SIGINT: container runtimes stop processes with TERM, and missing it
+	// would turn every deploy into a hard kill. Created BEFORE the
+	// listeners so both serve loops can reference it.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	ln, err := srv.Listen("tcp", ":"+cfg.controlPort)
 	if err != nil {
 		return fmt.Errorf("listen on tailnet interface :%s: %w", cfg.controlPort, err)
 	}
 	logger.Info("control plane listening", slog.String("addr", ln.Addr().String()))
 
-	// Shutdown: SIGINT/SIGTERM cancel ctx, which stops the accept loop and
-	// winds live connections down inside the server's grace window. SIGTERM
-	// matters as much as SIGINT: container runtimes stop processes with
-	// TERM, and missing it would turn every deploy into a hard kill.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// ts:observability-baseline criterion 5, production path for metrics and
+	// health: the SAME tsnet
+	// listener seam as the control plane — there is no code path here that
+	// could bind a wildcard, because no address string is ever parsed or
+	// constructed locally. The property is proven by test twice over
+	// (internal/coordinator for the control plane, internal/obs binding_test
+	// for these endpoints); this wiring is where the tested shape meets
+	// production.
+	oln, err := srv.Listen("tcp", ":"+cfg.obsPort)
+	if err != nil {
+		return fmt.Errorf("listen on tailnet interface :%s (observability): %w", cfg.obsPort, err)
+	}
+	logger.Info("observability listening", slog.String("addr", oln.Addr().String()))
+
+	obsDone := make(chan struct{})
+	go func() {
+		defer close(obsDone)
+		// Same ctx as the control plane: one signal stops both planes, and
+		// Serve's graceful shutdown lets an in-flight scrape finish. A
+		// runtime failure here is logged, not fatal — losing /metrics must
+		// not take messaging down with it.
+		if err := obs.Serve(ctx, oln, obsHandler); err != nil {
+			logger.Error("observability server failed", slog.String("reason", err.Error()))
+		}
+	}()
+
+	// Both listeners are bound and every component is wired: the process can
+	// now honestly claim coordinator readiness on /healthz.
+	coordReady.Store(true)
 
 	// The queue is the OfflineSink: holds for offline devices, drains on
 	// Hello with the client's last_acked_position, refuses at the size cap
@@ -211,6 +268,7 @@ func run(logger *slog.Logger) error {
 	// and its refusal gate live from this process's first connection.
 	coord := coordinator.NewServer(resolver, clock.Real(), logger, tracker, inbox)
 	coord.WireKeys(keys, nil)
+	coord.WireMetrics(metrics)
 	if err := coord.Serve(ctx, ln); err != nil {
 		// The drain can genuinely fail: a peer that ignores close frames
 		// outlives the grace window. Saying "shutdown complete" then would
@@ -225,6 +283,14 @@ func run(logger *slog.Logger) error {
 		}
 		return fmt.Errorf("serve: %w", err)
 	}
+	// Give the observability server its own moment to finish the graceful
+	// shutdown it started on ctx cancellation, so an in-flight health scrape
+	// of a dying process still gets an answer.
+	select {
+	case <-obsDone:
+	case <-time.After(6 * time.Second):
+		logger.Warn("observability server did not stop within budget")
+	}
 	logger.Info("shutdown complete")
 	return nil
 }
@@ -237,6 +303,7 @@ type config struct {
 	stateDir     string
 	storePath    string
 	controlPort  string
+	obsPort      string
 	presenceTTL  time.Duration
 	queueTTL     time.Duration
 	queueMaxSize int
@@ -264,6 +331,15 @@ func loadConfig() (*config, error) {
 		// privilege on a tailscale TUN interface, which the coordinator
 		// owns exclusively. Override per deployment via the environment.
 		port = "443"
+	}
+
+	// Observability port (ts:observability-baseline). 9464 keeps metrics
+	// and health on their own tailnet endpoint, separate from the control
+	// plane so a scrape can never interleave with a protocol frame and the
+	// two listeners can be firewalled independently if an operator wants.
+	obsPort := os.Getenv("WALKIE_OBS_PORT")
+	if obsPort == "" {
+		obsPort = "9464"
 	}
 
 	// The liveness TTL: how long a silent device stays online after its last
@@ -307,6 +383,7 @@ func loadConfig() (*config, error) {
 		stateDir:     stateDir,
 		storePath:    storePath,
 		controlPort:  port,
+		obsPort:      obsPort,
 		presenceTTL:  ttl,
 		queueTTL:     queueTTL,
 		queueMaxSize: queueMaxSize,

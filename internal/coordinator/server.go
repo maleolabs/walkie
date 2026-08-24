@@ -22,6 +22,7 @@ import (
 	"github.com/maleolabs/walkie/internal/coordinator/tsauth"
 	"github.com/maleolabs/walkie/internal/crypto"
 	walkiev1 "github.com/maleolabs/walkie/internal/genproto/walkie/v1"
+	"github.com/maleolabs/walkie/internal/obs"
 )
 
 // maxEnvelopeBytes bounds one control-plane frame.
@@ -137,6 +138,23 @@ type Server struct {
 	// the manual recovery path).
 	confirm crypto.ConfirmFunc
 
+	// metrics is ts:observability-baseline's hook point (internal/obs). Nil
+	// disables all metric emission — the shape every pre-observability test
+	// still uses; production wiring calls WireMetrics before Serve. Every
+	// obs.Metrics method tolerates nil anyway, so call sites stay guard-free
+	// even where a nil could slip through.
+	metrics *obs.Metrics
+
+	// seen records which devices have completed the identity gate during
+	// THIS process's lifetime, so an accepted connection from an
+	// already-seen device counts as a reconnect (walkie_reconnects_total).
+	// Deliberately in-memory and per-process: a counter that survives
+	// restarts would mix this run's reconnect rate with history, and
+	// Prometheus rate() semantics assume counter resets at process start.
+	// Guarded by seenMu.
+	seenMu sync.Mutex
+	seen   map[string]struct{}
+
 	// routes maps each connected device's resolved name to its live
 	// connection writers; routing.go owns the semantics. Guarded by routesMu.
 	// A device may hold several writers across a reconnect overlap, mirroring
@@ -191,7 +209,18 @@ func NewServer(resolver tsauth.Resolver, clk clock.Clock, logger *slog.Logger, t
 		offline:  offline,
 		conns:    make(map[*websocket.Conn]context.CancelFunc),
 		routes:   make(map[string]map[*connWriter]struct{}),
+		seen:     make(map[string]struct{}),
 	}
+}
+
+// WireMetrics attaches the observability surface (ts:observability-baseline).
+// Call before Serve, alongside the other pre-serve wiring: attaching
+// mid-flight would make counters depend on when each connection arrived
+// relative to the wiring, which no reader can reason about. A nil m disables
+// metric emission — the pre-observability shape, kept for tests of other
+// machinery.
+func (s *Server) WireMetrics(m *obs.Metrics) {
+	s.metrics = m
 }
 
 // Serve accepts connections on ln until ctx is cancelled or ln fails,
@@ -311,6 +340,22 @@ func (s *Server) shutdown(hs *http.Server) error {
 	}
 }
 
+// noteConnection records that device completed the identity gate and counts
+// the reconnect metric when it has been seen before in this process's
+// lifetime. First contact is not a reconnect; everything after is — including
+// a device that reconnects while its old connection still lingers (the
+// overlap case presence refcounts), which is precisely the event an operator
+// reading a reconnect rate wants counted.
+func (s *Server) noteConnection(device string) {
+	s.seenMu.Lock()
+	_, reconnected := s.seen[device]
+	s.seen[device] = struct{}{}
+	s.seenMu.Unlock()
+	if reconnected {
+		s.metrics.IncReconnect()
+	}
+}
+
 // liveConns snapshots the currently registered connections.
 func (s *Server) liveConns() []*websocket.Conn {
 	s.connsMu.Lock()
@@ -384,6 +429,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// precisely what WhoIs resolves.
 	remote, err := remoteAddrOf(r.RemoteAddr)
 	if err != nil {
+		s.metrics.IncAuthRefusal()
 		s.logger.Warn("connection refused: malformed remote address",
 			slog.String("remote_addr", r.RemoteAddr),
 			slog.String("reason", err.Error()),
@@ -398,6 +444,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// never message content, never key material (the no-content rule
 		// arrives formally with ts:observability-baseline but holds from
 		// the first line).
+		s.metrics.IncAuthRefusal()
 		s.logger.Warn("connection refused: identity unresolved",
 			slog.String("remote_addr", r.RemoteAddr),
 			slog.String("reason", err.Error()),
@@ -406,6 +453,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.noteConnection(deviceOf(id))
 	s.logger.Info("connection accepted",
 		slog.String("login_name", id.LoginName),
 		slog.String("node_name", id.NodeName),
